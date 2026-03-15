@@ -6,7 +6,7 @@ import logging
 
 from core.file_loader import (
     get_file_type, get_sheet_names, load_sheet, detect_header_row,
-    SUPPORTED_EXTENSIONS,
+    detect_data_start_row, SUPPORTED_EXTENSIONS,
 )
 from core.harmonizer import harmonize_df, _write_output
 from core.config_manager import MappingConfig, config_to_mapping
@@ -134,11 +134,25 @@ def process_single_file(filepath: Path,
         # Load data
         source_df = load_sheet(filepath, sheet_name=sheet_name, header_row=header_row)
 
-        # Build mapping - use full mapping with fallbacks
+        # Drop non-data leading rows (metadata rows after the header)
+        data_start = detect_data_start_row(source_df)
+        if data_start > 0:
+            logger.info(f"Skipping {data_start} non-data row(s) in {filepath.name}")
+            source_df = source_df.iloc[data_start:].reset_index(drop=True)
+
+        # Build mapping - use full mapping with fallbacks, plus any formulas
         full_mapping = {}
         simple_mapping = {}
+        formula_mapping = {}
         for target, cm in config.column_mappings.items():
-            if cm.mapping_type != "unmapped" and cm.source_columns:
+            if cm.mapping_type == "formula" and cm.formula_expression:
+                formula_mapping[target] = {
+                    'expression': cm.formula_expression,
+                    'level': cm.formula_level,
+                }
+                full_mapping[target] = []
+                simple_mapping[target] = None
+            elif cm.mapping_type != "unmapped" and cm.source_columns:
                 full_mapping[target] = cm.source_columns
                 simple_mapping[target] = cm.source_columns[0]
             else:
@@ -146,7 +160,9 @@ def process_single_file(filepath: Path,
                 simple_mapping[target] = None
 
         # Harmonize
-        harmonized = harmonize_df(simple_mapping, source_df, full_mapping=full_mapping)
+        harmonized = harmonize_df(simple_mapping, source_df,
+                                  full_mapping=full_mapping,
+                                  formula_mapping=formula_mapping or None)
 
         if len(harmonized.columns) == 0:
             result.status = "failed"

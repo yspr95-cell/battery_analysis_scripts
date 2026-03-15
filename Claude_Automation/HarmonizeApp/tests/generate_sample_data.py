@@ -8,7 +8,7 @@ OUTPUT_DIR = Path(__file__).parent / "sample_data"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 np.random.seed(42)
-N = 200  # rows per sheet
+N = 1_000_000  # rows per sheet (Excel max ~1,048,576 incl. header)
 
 
 def generate_mcm_style():
@@ -132,6 +132,6 @@ def generate_csv_style():
 if __name__ == "__main__":
     print("Generating sample data files...")
     generate_mcm_style()
-    generate_got_style()
-    generate_csv_style()
+    #generate_got_style()
+    #generate_csv_style()
     print(f"\nAll files saved to: {OUTPUT_DIR}")

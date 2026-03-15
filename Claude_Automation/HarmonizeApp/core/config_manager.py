@@ -20,8 +20,11 @@ class FileSettings:
 @dataclass
 class ColumnMapping:
     """Mapping for a single target column."""
-    mapping_type: str = "direct"  # "direct", "or_fallback", "unmapped"
+    mapping_type: str = "direct"  # "direct", "or_fallback", "formula", "unmapped"
     source_columns: list[str] = field(default_factory=list)
+    # Formula-specific fields (used when mapping_type == "formula")
+    formula_expression: str = ""
+    formula_level: int = 1  # 1 = applied to source data; 2 = applied to harmonized data
 
 
 @dataclass
@@ -41,10 +44,14 @@ class MappingConfig:
             "column_mappings": {},
         }
         for target, cm in self.column_mappings.items():
-            d["column_mappings"][target] = {
+            entry: dict = {
                 "mapping_type": cm.mapping_type,
                 "source_columns": cm.source_columns,
             }
+            if cm.mapping_type == "formula":
+                entry["formula_expression"] = cm.formula_expression
+                entry["formula_level"] = cm.formula_level
+            d["column_mappings"][target] = entry
         return d
 
     @classmethod
@@ -65,6 +72,8 @@ class MappingConfig:
             cfg.column_mappings[target] = ColumnMapping(
                 mapping_type=cm_data.get("mapping_type", "direct"),
                 source_columns=cm_data.get("source_columns", []),
+                formula_expression=cm_data.get("formula_expression", ""),
+                formula_level=cm_data.get("formula_level", 1),
             )
         return cfg
 

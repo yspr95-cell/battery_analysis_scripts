@@ -253,6 +253,53 @@ def _detect_separator(filepath: Path, encoding: str = 'utf-8') -> str:
     return best if candidates[best] > 0 else ','
 
 
+def detect_data_start_row(df: pd.DataFrame, max_scan: int = 10) -> int:
+    """Detect how many leading rows in a loaded DataFrame are non-data (metadata).
+
+    Heuristic: a real data row has at least some numeric or datetime values.
+    Metadata rows (e.g. report headers) are mostly text or empty.
+
+    Args:
+        df: DataFrame already loaded with the correct header row.
+        max_scan: Maximum number of rows to inspect.
+
+    Returns:
+        Index of the first row that looks like actual data (0 = no skip needed).
+    """
+    if df.empty:
+        return 0
+
+    scan_limit = min(max_scan, len(df))
+
+    for i in range(scan_limit):
+        row = df.iloc[i]
+        numeric_count = 0
+        non_empty_count = 0
+
+        for val in row:
+            # Skip NaN and empty strings
+            if pd.isna(val):
+                continue
+            if isinstance(val, str) and val.strip() == '':
+                continue
+            non_empty_count += 1
+            # Count numeric and datetime-like values
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                numeric_count += 1
+            elif hasattr(val, 'year'):  # datetime / Timestamp
+                numeric_count += 1
+
+        if non_empty_count == 0:
+            continue  # fully empty row – keep scanning
+
+        numeric_fraction = numeric_count / non_empty_count
+        # Real data row: ≥25% numeric cells OR at least 2 numeric columns
+        if numeric_fraction >= 0.25 or numeric_count >= 2:
+            return i
+
+    return 0  # could not detect, assume no skip needed
+
+
 def _is_numeric_string(s: str) -> bool:
     """Check if a string looks like a number."""
     try:

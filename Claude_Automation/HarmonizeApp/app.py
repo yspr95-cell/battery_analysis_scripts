@@ -12,8 +12,9 @@ from PySide6.QtWidgets import (
 
 from core.file_loader import (
     get_file_type, get_sheet_names, load_sheet, load_preview,
-    detect_header_row, get_file_size_mb, SUPPORTED_EXTENSIONS,
+    detect_header_row, detect_data_start_row, get_file_size_mb, SUPPORTED_EXTENSIONS,
 )
+from core.auto_mapper import suggest_mapping
 from core.harmonizer import harmonize_df, export_harmonized
 from core.validation import validate_mapping
 from core.config_manager import (
@@ -59,7 +60,8 @@ class _ExportWorker(QObject):
     error = Signal(str)
 
     def __init__(self, mapping, filepath, output_path, sheet_name,
-                 header_row, output_format, full_mapping=None):
+                 header_row, output_format, full_mapping=None,
+                 data_start_row=0, formula_mapping=None):
         super().__init__()
         self.mapping = mapping
         self.filepath = filepath
@@ -68,6 +70,8 @@ class _ExportWorker(QObject):
         self.header_row = header_row
         self.output_format = output_format
         self.full_mapping = full_mapping
+        self.data_start_row = data_start_row
+        self.formula_mapping = formula_mapping
 
     def run(self):
         try:
@@ -77,6 +81,8 @@ class _ExportWorker(QObject):
                 header_row=self.header_row,
                 output_format=self.output_format,
                 full_mapping=self.full_mapping,
+                data_start_row=self.data_start_row,
+                formula_mapping=self.formula_mapping,
             )
             self.finished.emit(row_count, str(self.output_path))
         except Exception as e:
@@ -92,6 +98,7 @@ class SingleFileTab(QWidget):
         self._current_filepath: Path | None = None
         self._current_df: pd.DataFrame | None = None
         self._total_rows: int = 0
+        self._data_start_row: int = 0   # non-data rows detected at top of loaded df
         self._load_thread: QThread | None = None
         self._load_worker: _LoadWorker | None = None
         self._export_thread: QThread | None = None
@@ -337,13 +344,38 @@ class SingleFileTab(QWidget):
             self._load_thread.start()
 
     def _on_preview_loaded(self, preview_df: pd.DataFrame, total_rows: int):
+        # --- Auto-detect and drop non-data leading rows ---
+        data_start = detect_data_start_row(preview_df)
+        if data_start > 0:
+            preview_df = preview_df.iloc[data_start:].reset_index(drop=True)
+            total_rows = max(total_rows - data_start, 0)
+        self._data_start_row = data_start
+
         self._current_df = preview_df
         self._total_rows = total_rows
         self._preview_table.set_dataframe(preview_df)
         self._set_ui_loading(False)
+
+        # Update mapping panel source columns (preserves existing selections)
         self._mapping_panel.set_source_columns(list(preview_df.columns))
+        self._mapping_panel.set_preview_df(preview_df)
+
+        # --- Auto-suggest column mapping for unmapped rows ---
+        suggestions = suggest_mapping(list(preview_df.columns))
+        self._mapping_panel.apply_suggestions(suggestions)
+        n_suggested = sum(1 for v in suggestions.values() if v is not None)
+
         self._apply_btn.setEnabled(True)
         self._update_status_bar()
+
+        # Show what was done automatically
+        msgs = []
+        if data_start > 0:
+            msgs.append(f"Skipped {data_start} non-data row{'s' if data_start > 1 else ''}")
+        if n_suggested > 0:
+            msgs.append(f"Auto-mapped {n_suggested} column{'s' if n_suggested > 1 else ''}")
+        if msgs:
+            self._status_bar.showMessage(" | ".join(msgs))
 
     def _on_load_error(self, error_msg: str):
         self._set_ui_loading(False)
@@ -377,16 +409,19 @@ class SingleFileTab(QWidget):
 
         mapping = self._mapping_panel.get_mapping()
         full_mapping = self._mapping_panel.get_full_mapping()
+        formula_mapping = self._mapping_panel.get_formula_mapping()
         result = validate_mapping(mapping)
 
-        if result.mapped_count == 0:
+        if result.mapped_count == 0 and not formula_mapping:
             QMessageBox.information(
                 self, "No columns mapped",
                 "Please map at least one source column to a target column."
             )
             return
 
-        harmonized = harmonize_df(mapping, self._current_df, full_mapping=full_mapping)
+        harmonized = harmonize_df(mapping, self._current_df,
+                                  full_mapping=full_mapping,
+                                  formula_mapping=formula_mapping)
         self._harmonized_table.set_dataframe(harmonized)
         self._export_btn.setEnabled(True)
         self._status_bar.showMessage(
@@ -400,9 +435,10 @@ class SingleFileTab(QWidget):
 
         mapping = self._mapping_panel.get_mapping()
         full_mapping = self._mapping_panel.get_full_mapping()
+        formula_mapping = self._mapping_panel.get_formula_mapping()
         result = validate_mapping(mapping)
 
-        if result.mapped_count == 0:
+        if result.mapped_count == 0 and not formula_mapping:
             QMessageBox.information(
                 self, "No columns mapped",
                 "Please map at least one source column to a target column."
@@ -448,6 +484,8 @@ class SingleFileTab(QWidget):
         self._export_worker = _ExportWorker(
             mapping, self._current_filepath, output_path,
             sheet, header_row, output_format, full_mapping,
+            data_start_row=self._data_start_row,
+            formula_mapping=formula_mapping,
         )
         self._export_worker.moveToThread(self._export_thread)
         self._export_thread.started.connect(self._export_worker.run)
@@ -475,6 +513,7 @@ class SingleFileTab(QWidget):
     def _on_save_config(self):
         mapping = self._mapping_panel.get_mapping()
         full_mapping = self._mapping_panel.get_full_mapping()
+        formula_mapping = self._mapping_panel.get_formula_mapping()
 
         # Ask for config name
         name, ok = QInputDialog.getText(
@@ -502,6 +541,13 @@ class SingleFileTab(QWidget):
                     mapping_type="direct",
                     source_columns=sources,
                 )
+        # Add formula mappings
+        for target, fm in formula_mapping.items():
+            config.column_mappings[target] = ColumnMapping(
+                mapping_type="formula",
+                formula_expression=fm.get('expression', ''),
+                formula_level=fm.get('level', 1),
+            )
 
         filepath, _ = QFileDialog.getSaveFileName(
             self, "Save Config", f"{name}.json",
@@ -537,16 +583,26 @@ class SingleFileTab(QWidget):
 
         # Build full mapping from config
         full_mapping = {}
+        formula_mapping = {}
         for target, cm in config.column_mappings.items():
-            full_mapping[target] = cm.source_columns if cm.source_columns else []
+            if cm.mapping_type == "formula":
+                if cm.formula_expression:
+                    formula_mapping[target] = {
+                        'expression': cm.formula_expression,
+                        'level': cm.formula_level,
+                    }
+            else:
+                full_mapping[target] = cm.source_columns if cm.source_columns else []
 
         self._mapping_panel.set_full_mapping(full_mapping)
+        self._mapping_panel.set_formula_mapping(formula_mapping)
         self._status_bar.showMessage(f"Config loaded: {config.name}")
 
     def get_current_config(self) -> MappingConfig | None:
         """Build a MappingConfig from current state (for sending to batch tab)."""
         mapping = self._mapping_panel.get_mapping()
         full_mapping = self._mapping_panel.get_full_mapping()
+        formula_mapping = self._mapping_panel.get_formula_mapping()
 
         config = mapping_to_config(
             mapping,
@@ -565,6 +621,12 @@ class SingleFileTab(QWidget):
                     mapping_type="direct",
                     source_columns=sources,
                 )
+        for target, fm in formula_mapping.items():
+            config.column_mappings[target] = ColumnMapping(
+                mapping_type="formula",
+                formula_expression=fm.get('expression', ''),
+                formula_level=fm.get('level', 1),
+            )
         return config
 
     def _update_status_bar(self):
