@@ -9,7 +9,6 @@ pyyaml           # format_config.yaml
 python-magic     # file type detection
 tqdm             # progress bars
 tabulate         # console table summary
-hashlib          # built-in, no install needed
 
 # ── GUI ───────────────────────────────────────────────────────────────────────
 PySide6          # extraction_gui.py

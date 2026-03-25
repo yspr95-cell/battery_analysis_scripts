@@ -122,12 +122,14 @@ One row per source file, updated in place on rerun (upsert).
 
 ## Dashboard (`harmonize_dashboard.html`)
 
-Self-contained HTML file — open in any browser, no server needed.
+Self-contained HTML file — open in any browser, no server needed. No CDN or internet required.
 
-- **Summary cards** — total files, harmonized, skipped, failed, OK, modified, deleted
-- **Stacked bar chart** (Chart.js) — per-cell harmonization status
-- **Cell summary table** (sortable) — click any row to expand per-file details
-- **Multi-PC** — merges all `pc_logs/harmonize_trace_log_*.xlsx` files so the dashboard reflects every machine that ran the pipeline
+- **Summary cards** — total cell IDs, extract files, harmonized, not harmonized
+- **Cell summary table** (sortable) — per-cell counts of Extract Files / Harmonized / Not Harmonized with a progress bar (%)
+  - **Expand drill-down** — click any row to see:
+    - Each source file in `02_Extracted_Raw_Files/{cell_id}/` with a **Yes / No** harmonized badge
+    - Last-edited timestamp of the matching CSV in `03_Harmonized_Data/{cell_id}/`
+- **Live folder scan** — reflects the actual file-system state at run time (not trace-log based); a file is shown as harmonized if and only if a matching `.csv` exists in the harmonize folder
 
 ---
 
@@ -202,7 +204,7 @@ Key packages: `pandas`, `openpyxl`, `pyarrow`, `python-magic`, `pyyaml`, `tqdm`
 - `run_all_config.py` — multi-project entry point; add multiple `BASE_PATH` entries as a list of project dicts
 - `run_all.bat` — Windows batch launcher with Task Scheduler setup instructions inline; appends output to `run_all.log`
 - `src/trace_log.py` — persistent per-file audit log (`harmonize_trace_log_{HOSTNAME}.xlsx`); upsert behaviour (one row per file, updates in place on rerun); `Current_status` refreshed on every run
-- `src/dashboard.py` — self-contained HTML dashboard with Chart.js bar chart, sortable cell table, and expandable per-file detail rows
+- `src/dashboard.py` — self-contained HTML dashboard built from a live folder scan of `02_Extracted_Raw_Files/` and `03_Harmonized_Data/`; sortable cell table with progress bars and expandable per-file rows showing harmonization status and last-edited timestamp; no CDN dependency
 - Per-PC log files in `06_Logs/pc_logs/` subfolder — eliminates OneDrive/network write conflicts when multiple PCs process the same data root simultaneously
 - `src/paths.py` — `PATHS_OBJ` now accepts `base_path` in `__init__()` (injectable) instead of hard-coded class attribute
 - Lock file guard (`run_all_{HOSTNAME}.lock`) — prevents overlapping scheduled runs on the same PC

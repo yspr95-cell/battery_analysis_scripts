@@ -59,18 +59,15 @@ def _build_zip_rows(status_dict: dict) -> list[dict]:
         ignored  = len(entry.get("to_ignore", {}).get("names", []))
         unknown  = len(entry.get("unknown", {}).get("names", []))
 
-        # Cell IDs from copied files
-        cell_ids = sorted({
-            meta.get("cellid", "?")
-            for meta in entry.get("copied_files_meta", {}).values()
-            if meta.get("cellid")
-        })
-
-        # Corrupt files grouped by cell ID
+        # Corrupt files grouped by cell ID (needed by _build_cell_details too)
         corrupt_by_cell = _group_corrupt(
             entry.get("corrupted", {}).get("names", []),
             entry.get("to_copy", {}).get("meta", {}),
         )
+
+        # Per-cell breakdown: to_copy / copied / corrupt / supplier
+        cell_details = _build_cell_details(entry, corrupt_by_cell)
+        cell_ids = sorted(cell_details.keys())
 
         archive_moved = bool(entry.get("compressed_file_meta", {}).get("copied_to_Archived"))
 
@@ -82,19 +79,69 @@ def _build_zip_rows(status_dict: dict) -> list[dict]:
             overall = "Failed"
 
         rows.append({
-            "zip_name":       zip_name,
-            "zip_path":       zip_path_str,
-            "to_copy":        to_copy,
-            "copied":         copied,
-            "corrupt":        corrupt,
-            "ignored":        ignored,
-            "unknown":        unknown,
-            "cell_ids":       cell_ids,
+            "zip_name":        zip_name,
+            "zip_path":        zip_path_str,
+            "to_copy":         to_copy,
+            "copied":          copied,
+            "corrupt":         corrupt,
+            "ignored":         ignored,
+            "unknown":         unknown,
+            "cell_ids":        cell_ids,
+            "cell_details":    cell_details,
             "corrupt_by_cell": corrupt_by_cell,
-            "archive_moved":  archive_moved,
-            "overall":        overall,
+            "archive_moved":   archive_moved,
+            "overall":         overall,
         })
     return rows
+
+
+def _extract_cellid(file_path_str: str, cellid_prefix: str) -> str:
+    """Derive a cell ID from a file path using its prefix (mirrors file_handling logic)."""
+    import re
+    stem = Path(file_path_str).stem
+    if cellid_prefix and cellid_prefix in stem:
+        splits = stem.split(cellid_prefix)
+        if len(splits) > 1:
+            return cellid_prefix + re.split(r"[^a-zA-Z0-9]+", splits[1])[0]
+    return "unknown"
+
+
+def _build_cell_details(entry: dict, corrupt_by_cell: dict) -> dict:
+    """
+    Build per-cell stats from the status dict entry.
+
+    Returns:
+        {cellid: {"to_copy": int, "copied": int, "corrupt": int, "supplier": str}}
+    """
+    cell: dict[str, dict] = {}
+
+    def _ensure(cid, supplier="—"):
+        if cid not in cell:
+            cell[cid] = {"to_copy": 0, "copied": 0, "corrupt": 0, "supplier": supplier}
+        if supplier and supplier != "—":
+            cell[cid]["supplier"] = supplier
+
+    # to_copy — one entry per file in to_copy.meta (before splitting)
+    for path_str, meta in entry.get("to_copy", {}).get("meta", {}).items():
+        prefix   = meta.get("cellid_prefix", "")
+        supplier = meta.get("supplier", "—") or "—"
+        cellid   = _extract_cellid(path_str, prefix)
+        _ensure(cellid, supplier)
+        cell[cellid]["to_copy"] += 1
+
+    # copied — one entry per file actually placed in the cell folder
+    for path_str, meta in entry.get("copied_files_meta", {}).items():
+        cellid   = meta.get("cellid", "unknown") or "unknown"
+        supplier = meta.get("supplier", "—") or "—"
+        _ensure(cellid, supplier)
+        cell[cellid]["copied"] += 1
+
+    # corrupt — from already-grouped corrupt_by_cell
+    for cellid, files in corrupt_by_cell.items():
+        _ensure(cellid)
+        cell[cellid]["corrupt"] += len(files)
+
+    return cell
 
 
 def _group_corrupt(corrupt_names: list, to_copy_meta: dict) -> dict:
@@ -151,6 +198,17 @@ def _merge_historical(live_rows: list[dict], logs_path: Path) -> list[dict]:
         cell_ids_raw = str(row.get("Cell_IDs", ""))
         cell_ids = [c.strip() for c in cell_ids_raw.split(",") if c.strip() and c.strip() != "—"]
 
+        # Build minimal cell_details from historical data (no supplier info available)
+        hist_cell_details = {
+            cid: {
+                "to_copy":  0,
+                "copied":   0,
+                "corrupt":  len(corrupt_by_cell.get(cid, [])),
+                "supplier": "—",
+            }
+            for cid in cell_ids
+        }
+
         live_rows.append({
             "zip_name":        str(row.get("ZIP_name", "?")),
             "zip_path":        zp,
@@ -160,6 +218,7 @@ def _merge_historical(live_rows: list[dict], logs_path: Path) -> list[dict]:
             "ignored":         _int(row.get("Ignored")),
             "unknown":         _int(row.get("Unknown")),
             "cell_ids":        cell_ids,
+            "cell_details":    hist_cell_details,
             "corrupt_by_cell": corrupt_by_cell,
             "archive_moved":   str(row.get("Archive_moved", "")).lower() == "true",
             "overall":         str(row.get("Status", "—")),
@@ -279,6 +338,15 @@ def _build_html(zip_rows: list[dict], run_ts: str, hostname: str) -> str:
     background: var(--blue-light); color: var(--blue-dark);
     border-radius: 20px; padding: 3px 12px; font-size: .80rem; font-weight: 600;
   }}
+
+  /* Cell details table */
+  .cell-table {{ border-collapse: collapse; border-radius: 6px; overflow: hidden; width: 100%; box-shadow: none; }}
+  .cell-table th {{ background: #2E75B6; font-size: .76rem; padding: 7px 14px; cursor: default; }}
+  .cell-table th:hover {{ background: #2E75B6; }}
+  .cell-table td {{ font-size: .80rem; padding: 6px 14px; background: white; border-bottom: 1px solid var(--grey-line); }}
+  .cell-table tr:last-child td {{ border-bottom: none; }}
+  .cell-table .num-red    {{ color: #c0392b; font-weight: 700; }}
+  .cell-table .num-green  {{ color: #276221; font-weight: 700; }}
 
   /* Corrupt sub-table */
   .corrupt-table {{ border-collapse: collapse; border-radius: 6px; overflow: hidden; width: auto; box-shadow: none; }}
@@ -423,20 +491,42 @@ function numCell(n, cls) {{
 }}
 
 function buildDetail(row) {{
-  // Cell ID chips
-  let chips = '<div class="detail-section"><h3>Cell IDs (' + row.cell_ids.length + ')</h3>';
-  if (row.cell_ids.length === 0) {{
-    chips += '<p style="color:#999;font-size:.82rem">No cell IDs found (no files copied)</p>';
-  }} else {{
-    chips += '<div class="chip-list">';
-    row.cell_ids.forEach(c => {{ chips += `<span class="chip">${{c}}</span>`; }});
-    chips += '</div>';
-  }}
-  chips += '</div>';
-
-  // Corrupt files per cell
-  let corruptHtml = '';
+  const cd  = row.cell_details || {{}};
   const cbc = row.corrupt_by_cell || {{}};
+
+  // ── Per-cell summary table ────────────────────────────────────────────────
+  let cellTable = '<div class="detail-section"><h3>Cell ID Breakdown (' + row.cell_ids.length + ')</h3>';
+  if (row.cell_ids.length === 0) {{
+    cellTable += '<p style="color:#999;font-size:.82rem">No cell IDs found (no files copied)</p>';
+  }} else {{
+    cellTable += `<table class="cell-table">
+      <thead><tr>
+        <th>Cell ID</th>
+        <th>Supplier</th>
+        <th>To Copy</th>
+        <th>Copied</th>
+        <th>Corrupt</th>
+      </tr></thead><tbody>`;
+    row.cell_ids.forEach(cid => {{
+      const s = cd[cid] || {{}};
+      const toCopy  = s.to_copy  ?? 0;
+      const copied  = s.copied   ?? 0;
+      const corrupt = s.corrupt  ?? 0;
+      const sup     = s.supplier || '—';
+      cellTable += `<tr>
+        <td><strong>${{cid}}</strong></td>
+        <td>${{sup}}</td>
+        <td>${{toCopy}}</td>
+        <td class="${{copied  > 0 ? 'num-green' : ''}}">${{copied}}</td>
+        <td class="${{corrupt > 0 ? 'num-red'   : ''}}">${{corrupt}}</td>
+      </tr>`;
+    }});
+    cellTable += '</tbody></table>';
+  }}
+  cellTable += '</div>';
+
+  // ── Corrupt file names grouped by cell ───────────────────────────────────
+  let corruptHtml = '';
   const corruptCells = Object.keys(cbc);
   if (corruptCells.length > 0) {{
     corruptHtml = '<div class="detail-section"><h3 style="color:#c0392b">Corrupt Files by Cell ID</h3>';
@@ -450,11 +540,11 @@ function buildDetail(row) {{
     corruptHtml += '</tbody></table></div>';
   }}
 
-  // ZIP path
+  // ── Archive path ──────────────────────────────────────────────────────────
   const pathHtml = `<div class="detail-section"><h3>Archive Path</h3>
     <code style="font-size:.78rem;color:#555;word-break:break-all">${{row.zip_path}}</code></div>`;
 
-  return `<div class="detail-inner">${{chips}}${{corruptHtml}}${{pathHtml}}</div>`;
+  return `<div class="detail-inner">${{cellTable}}${{corruptHtml}}${{pathHtml}}</div>`;
 }}
 
 let _allRows = DATA.rows.slice();  // working copy for sort/filter

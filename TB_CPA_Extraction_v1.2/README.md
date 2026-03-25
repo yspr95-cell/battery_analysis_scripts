@@ -140,8 +140,8 @@ Self-contained HTML — open in any browser, no server needed.
 - **Stacked bar chart** (Chart.js) — per-ZIP copied / corrupt / ignored breakdown
 - **ZIP archive table** (sortable, filterable) — one row per archive
   - **Expand drill-down** — click any row to see:
-    - All cell ID chips found in that archive
-    - Corrupt files grouped by cell ID (file names listed)
+    - **Cell ID breakdown table** — per-cell counts of To Copy / Copied / Corrupt, plus detected Supplier (from `format_config.yaml` pattern matching)
+    - **Corrupt files by cell ID** — individual filenames listed under each cell
     - Full archive path
 - **Multi-PC** — merges all `pc_logs/extraction_trace_log_*.xlsx` files so the dashboard reflects every machine that ran the pipeline
 
@@ -218,7 +218,7 @@ Key packages: `patool`, `pandas`, `openpyxl`, `pyyaml`, `python-magic`, `tqdm`, 
 - `run_all_config.py` — multi-project entry point with per-PC lock file guard
 - `run_all.bat` — Windows batch launcher with Task Scheduler setup instructions inline
 - `src/trace_log.py` — persistent per-archive audit log (`extraction_trace_log_{HOSTNAME}.xlsx`); upsert behaviour; one row per ZIP
-- `src/dashboard.py` — self-contained HTML dashboard with Chart.js stacked bar chart, sortable/filterable ZIP table, and expandable drill-down rows showing cell IDs and corrupt files per cell
+- `src/dashboard.py` — self-contained HTML dashboard with Chart.js stacked bar chart, sortable/filterable ZIP table, and expandable drill-down rows showing a per-cell breakdown table (To Copy / Copied / Corrupt / Supplier) and corrupt file names per cell
 - Per-PC log files in `06_Logs/pc_logs/` — no OneDrive/network write conflicts when multiple PCs use the same data root
 - `src/paths.py` — `PATHS_OBJ` now accepts `base_path` as constructor argument (no hardcoding)
 

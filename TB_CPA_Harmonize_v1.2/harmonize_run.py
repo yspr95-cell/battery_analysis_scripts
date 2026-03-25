@@ -191,7 +191,9 @@ def run_harmonize(
     trace_log.save()
 
     if generate_dashboard:
-        DashboardGenerator(trace_log, logs_path=logs_path).generate(logs_path / "harmonize_dashboard.html")
+        DashboardGenerator(trace_log, logs_path=logs_path,
+                           extract_path=extract_path,
+                           harmonized_path=harmonized_folder).generate(logs_path / "harmonize_dashboard.html")
 
     logging.info(f"\n ----------- END OF RUN ----------- \n")
     logging.shutdown()
