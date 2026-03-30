@@ -27,6 +27,7 @@ import subprocess
 _HERE        = Path(__file__).parent
 _RUNNER      = _HERE / "src" / "_gui_runner.py"
 _DASH_RUNNER = _HERE / "src" / "_dashboard_runner.py"
+_PCLOG_RUNNER = _HERE / "src" / "_pclog_runner.py"
 _PERSIST     = _HERE / "gui_configs.json"
 
 # ── Stylesheet (Catppuccin Mocha dark theme) ──────────────────────────────────
@@ -94,6 +95,11 @@ QPushButton#run_all_btn:disabled { background: #1e3050; color: #3a5070; }
 QPushButton#add_btn    { background: #313244; color: #a6e3a1; }
 QPushButton#remove_btn { background: #313244; color: #f38ba8; }
 QPushButton#dup_btn    { background: #313244; color: #89b4fa; }
+
+QPushButton#reload_dash_btn  { background: #89dceb; color: #1e1e2e; font-weight: bold; padding: 6px 14px; }
+QPushButton#reload_dash_btn:hover  { background: #6ec8d6; }
+QPushButton#rebuild_pclog_btn { background: #cba6f7; color: #1e1e2e; font-weight: bold; padding: 6px 14px; }
+QPushButton#rebuild_pclog_btn:hover { background: #b48de0; }
 
 QPlainTextEdit#console {
     background: #11111b; color: #a6e3a1; border: none;
@@ -221,6 +227,48 @@ class DashboardWorker(QThread):
                 pass
 
 
+# ── PCLogWorker ───────────────────────────────────────────────────────────────
+
+class PCLogWorker(QThread):
+    line_received = Signal(str)
+    finished = Signal(bool, str)
+
+    def __init__(self, base_path: str):
+        super().__init__()
+        self._base_path = base_path
+
+    def run(self):
+        import tempfile
+        cfg = {"base_path": self._base_path}
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as f:
+            json.dump(cfg, f)
+            tmp_path = f.name
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, str(_PCLOG_RUNNER), tmp_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=str(_HERE),
+            )
+            for line in proc.stdout:
+                self.line_received.emit(line.rstrip())
+            proc.wait()
+            ok = proc.returncode == 0
+            self.finished.emit(ok, "PC log rebuilt." if ok else f"PC log rebuild failed (exit {proc.returncode}).")
+        except Exception as e:
+            self.finished.emit(False, str(e))
+        finally:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
 # ── ConfigEditorWidget ────────────────────────────────────────────────────────
 
 class ConfigEditorWidget(QWidget):
@@ -228,6 +276,7 @@ class ConfigEditorWidget(QWidget):
     stop_requested             = Signal()
     config_changed             = Signal()
     reload_dashboard_requested = Signal(dict)
+    rebuild_pclog_requested    = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -302,12 +351,16 @@ class ConfigEditorWidget(QWidget):
         self.dashboard_cb = QCheckBox("Generate HTML dashboard after run")
         self.dashboard_cb.stateChanged.connect(self._on_change)
         dash_row.addWidget(self.dashboard_cb)
-        self.reload_dash_btn = QPushButton("⟳")
+        self.reload_dash_btn = QPushButton("⟳  Refresh Dashboard")
         self.reload_dash_btn.setObjectName("reload_dash_btn")
-        self.reload_dash_btn.setFixedSize(28, 28)
         self.reload_dash_btn.setToolTip("Regenerate dashboard now (without running the pipeline)")
         self.reload_dash_btn.clicked.connect(self._emit_reload_dashboard)
         dash_row.addWidget(self.reload_dash_btn)
+        self.rebuild_pclog_btn = QPushButton("📋  Rebuild PC Log")
+        self.rebuild_pclog_btn.setObjectName("rebuild_pclog_btn")
+        self.rebuild_pclog_btn.setToolTip("Rebuild PC trace log Excel from existing JSON status files")
+        self.rebuild_pclog_btn.clicked.connect(self._emit_rebuild_pclog)
+        dash_row.addWidget(self.rebuild_pclog_btn)
         dash_row.addStretch()
         layout.addLayout(dash_row)
 
@@ -405,6 +458,9 @@ class ConfigEditorWidget(QWidget):
     def _emit_reload_dashboard(self):
         self.reload_dashboard_requested.emit(self.read_config())
 
+    def _emit_rebuild_pclog(self):
+        self.rebuild_pclog_requested.emit(self.read_config())
+
 
 # ── ConsoleWidget ─────────────────────────────────────────────────────────────
 
@@ -463,6 +519,7 @@ class MainWindow(QMainWindow):
         self._current_idx: int = -1
         self._worker: RunWorker | None = None
         self._dash_worker: DashboardWorker | None = None
+        self._pclog_worker: PCLogWorker | None = None
         self._run_all_queue: list[int] = []
 
         root = QWidget()
@@ -541,6 +598,7 @@ class MainWindow(QMainWindow):
         self.editor.stop_requested.connect(self._stop)
         self.editor.config_changed.connect(self._on_editor_change)
         self.editor.reload_dashboard_requested.connect(self._reload_dashboard)
+        self.editor.rebuild_pclog_requested.connect(self._rebuild_pclog)
         body_split.addWidget(self.editor)
         body_split.setStretchFactor(0, 0)
         body_split.setStretchFactor(1, 1)
@@ -625,6 +683,20 @@ class MainWindow(QMainWindow):
             lambda ok, msg: self.console.append(f"{'✔' if ok else '✗'}  {msg}")
         )
         self._dash_worker.start()
+
+    def _rebuild_pclog(self, cfg: dict):
+        if self._pclog_worker and self._pclog_worker.isRunning():
+            return
+        if not cfg.get("base_path"):
+            QMessageBox.warning(self, "Missing Path", "Please set a Base Path first.")
+            return
+        self.console.append("📋  Rebuilding PC log from JSON files…")
+        self._pclog_worker = PCLogWorker(cfg["base_path"])
+        self._pclog_worker.line_received.connect(self.console.append)
+        self._pclog_worker.finished.connect(
+            lambda ok, msg: self.console.append(f"{'✔' if ok else '✗'}  {msg}")
+        )
+        self._pclog_worker.start()
 
     # ── Run logic ─────────────────────────────────────────────────────────────
 

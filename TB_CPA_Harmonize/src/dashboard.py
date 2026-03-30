@@ -21,14 +21,17 @@ class DashboardGenerator:
     Usage:
         gen = DashboardGenerator(trace_log, logs_path,
                                  extract_path=extract_path,
-                                 harmonized_path=harmonized_path)
+                                 harmonized_path=harmonized_path,
+                                 project_name="ProjectA/B2-2")
         gen.generate(logs_path / "harmonize_dashboard.html")
     """
 
     def __init__(self, trace_log, logs_path: Path = None,
-                 extract_path: Path = None, harmonized_path: Path = None):
+                 extract_path: Path = None, harmonized_path: Path = None,
+                 project_name: str = ""):
         self._extract_path    = extract_path
         self._harmonized_path = harmonized_path
+        self._project_name    = project_name
 
     # ── Public ────────────────────────────────────────────────────────────────
 
@@ -42,7 +45,7 @@ class DashboardGenerator:
             }
 
         run_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        html   = _build_html(cell_summary, total_stats, run_ts)
+        html   = _build_html(cell_summary, total_stats, run_ts, self._project_name)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(html, encoding="utf-8")
@@ -75,6 +78,7 @@ class DashboardGenerator:
 
             file_rows = []
             harmonized_count = 0
+            latest_mtime = 0.0
 
             for src in src_files:
                 csv_path    = harmonized_path / cell_id / (src.stem + ".csv")
@@ -85,11 +89,21 @@ class DashboardGenerator:
                     harmonized_count += 1
                     try:
                         mtime = csv_path.stat().st_mtime
+                        if mtime > latest_mtime:
+                            latest_mtime = mtime
                         last_edited = datetime.fromtimestamp(mtime).strftime(
                             "%Y-%m-%d %H:%M:%S"
                         )
                     except Exception:
                         last_edited = "—"
+
+                # Track latest mtime from the extracted source file too
+                try:
+                    src_mtime = src.stat().st_mtime
+                    if src_mtime > latest_mtime:
+                        latest_mtime = src_mtime
+                except Exception:
+                    pass
 
                 file_rows.append({
                     "file_name":    src.name,
@@ -97,13 +111,19 @@ class DashboardGenerator:
                     "last_edited":  last_edited,
                 })
 
+            last_file_modified = (
+                datetime.fromtimestamp(latest_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                if latest_mtime > 0 else "—"
+            )
+
             not_harm = len(src_files) - harmonized_count
             cell_summary.append({
-                "cell_id":           cell_id,
-                "extract_count":     len(src_files),
-                "harmonized_count":  harmonized_count,
+                "cell_id":              cell_id,
+                "extract_count":        len(src_files),
+                "harmonized_count":     harmonized_count,
                 "not_harmonized_count": not_harm,
-                "files":             file_rows,
+                "last_file_modified":   last_file_modified,
+                "files":                file_rows,
             })
 
         total_extract    = sum(c["extract_count"]     for c in cell_summary)
@@ -119,8 +139,10 @@ class DashboardGenerator:
 
 # ── HTML builder ───────────────────────────────────────────────────────────────
 
-def _build_html(cell_summary: list, total_stats: dict, run_ts: str) -> str:
+def _build_html(cell_summary: list, total_stats: dict, run_ts: str, project_name: str = "") -> str:
     data_json = json.dumps({"cells": cell_summary, "totals": total_stats}, indent=2)
+
+    proj_subtitle = f" &nbsp;|&nbsp; {project_name}" if project_name else ""
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -165,6 +187,14 @@ def _build_html(cell_summary: list, total_stats: dict, run_ts: str) -> str:
   .card.red   {{ border-top-color: var(--red); }}
   .card .val  {{ font-size: 2rem; font-weight: 700; }}
   .card .lbl  {{ font-size: 0.78rem; color: #6c757d; margin-top: 4px; text-transform: uppercase; letter-spacing: .5px; }}
+
+  /* ── Filter bar ── */
+  .filter-bar {{ margin: 0 32px 16px; display: flex; gap: 10px; align-items: center; }}
+  .filter-bar input {{
+    border: 1px solid var(--grey-line); border-radius: 6px; padding: 6px 12px;
+    font-size: .88rem; width: 300px; background: white;
+  }}
+  .filter-bar label {{ font-size: .85rem; color: #6c757d; }}
 
   /* ── Cell table ── */
   .section {{ margin: 0 32px 32px; }}
@@ -217,11 +247,16 @@ def _build_html(cell_summary: list, total_stats: dict, run_ts: str) -> str:
 <div class="header">
   <div>
     <h1>TB_CPA Harmonization Dashboard</h1>
-    <div class="subtitle">Generated: {run_ts} &nbsp;|&nbsp; TB_CPA_Harmonize v1.2 &nbsp;|&nbsp; Folder scan view</div>
+    <div class="subtitle">Generated: {run_ts} &nbsp;|&nbsp; TB_CPA_Harmonize v1.2{proj_subtitle}</div>
   </div>
 </div>
 
 <div class="cards" id="cards"></div>
+
+<div class="filter-bar">
+  <label>Filter Cell ID:</label>
+  <input type="text" id="searchInput" placeholder="Search cell ID …" oninput="applyFilter()">
+</div>
 
 <div class="section">
   <h2>Cell Summary &nbsp;<small style="font-weight:normal;color:#6c757d">(click a row to expand file details)</small></h2>
@@ -232,7 +267,8 @@ def _build_html(cell_summary: list, total_stats: dict, run_ts: str) -> str:
         <th onclick="sortTable(1)">Extract Files ⇅</th>
         <th onclick="sortTable(2)">Harmonized ⇅</th>
         <th onclick="sortTable(3)">Not Harmonized ⇅</th>
-        <th>Progress</th>
+        <th onclick="sortTable(4)">Progress ⇅</th>
+        <th onclick="sortTable(5)">Last Modified (Extract) ⇅</th>
       </tr>
     </thead>
     <tbody id="cellTbody"></tbody>
@@ -259,13 +295,15 @@ const DATA = {data_json};
 
 // ── Cell table ────────────────────────────────────────────────────────────────
 const tbody = document.getElementById('cellTbody');
+let _allCells = DATA.cells.slice();
+let _sortDir = {{}};
 
 function progressBar(harmonized, total) {{
   const pct = total > 0 ? Math.round(harmonized / total * 100) : 0;
-  return `<div class="prog-wrap">
+  return {{ pct, html: `<div class="prog-wrap">
     <div class="prog-bar"><div class="prog-fill" style="width:${{pct}}%"></div></div>
     <span class="prog-pct">${{pct}}%</span>
-  </div>`;
+  </div>` }};
 }}
 
 function renderFileDetail(files) {{
@@ -289,51 +327,72 @@ function renderFileDetail(files) {{
   return html;
 }}
 
-DATA.cells.forEach((cell) => {{
-  const tr = document.createElement('tr');
-  tr.className = 'cell-row';
-  tr.innerHTML = `
-    <td>${{cell.cell_id}}</td>
-    <td>${{cell.extract_count}}</td>
-    <td>${{cell.harmonized_count}}</td>
-    <td>${{cell.not_harmonized_count}}</td>
-    <td>${{progressBar(cell.harmonized_count, cell.extract_count)}}</td>
-  `;
-  tbody.appendChild(tr);
+function renderRows(cells) {{
+  tbody.innerHTML = '';
+  cells.forEach(cell => {{
+    const prog = progressBar(cell.harmonized_count, cell.extract_count);
+    const tr = document.createElement('tr');
+    tr.className = 'cell-row';
+    tr.dataset.cellid = cell.cell_id.toLowerCase();
+    tr.dataset.sortpct = prog.pct;
+    tr.innerHTML = `
+      <td>${{cell.cell_id}}</td>
+      <td>${{cell.extract_count}}</td>
+      <td>${{cell.harmonized_count}}</td>
+      <td>${{cell.not_harmonized_count}}</td>
+      <td data-sort="${{prog.pct}}">${{prog.html}}</td>
+      <td>${{cell.last_file_modified || '—'}}</td>
+    `;
+    tbody.appendChild(tr);
 
-  const detailTr = document.createElement('tr');
-  detailTr.className = 'detail-row';
-  detailTr.style.display = 'none';
-  const detailTd = document.createElement('td');
-  detailTd.colSpan = 5;
-  detailTd.innerHTML = renderFileDetail(cell.files);
-  detailTr.appendChild(detailTd);
-  tbody.appendChild(detailTr);
+    const detailTr = document.createElement('tr');
+    detailTr.className = 'detail-row';
+    detailTr.style.display = 'none';
+    const detailTd = document.createElement('td');
+    detailTd.colSpan = 6;
+    detailTd.innerHTML = renderFileDetail(cell.files);
+    detailTr.appendChild(detailTd);
+    tbody.appendChild(detailTr);
 
-  tr.addEventListener('click', () => {{
-    const open = detailTr.style.display !== 'none';
-    detailTr.style.display = open ? 'none' : 'table-row';
-    tr.classList.toggle('open', !open);
+    tr.addEventListener('click', () => {{
+      const open = detailTr.style.display !== 'none';
+      detailTr.style.display = open ? 'none' : 'table-row';
+      tr.classList.toggle('open', !open);
+    }});
   }});
-}});
+}}
+
+renderRows(_allCells);
+
+// ── Filter ────────────────────────────────────────────────────────────────────
+function applyFilter() {{
+  const q = document.getElementById('searchInput').value.toLowerCase();
+  _allCells = DATA.cells.filter(c => !q || c.cell_id.toLowerCase().includes(q));
+  renderRows(_allCells);
+}}
 
 // ── Sort ──────────────────────────────────────────────────────────────────────
-let _sortDir = {{}};
 function sortTable(colIdx) {{
-  const rows = Array.from(tbody.querySelectorAll('tr.cell-row'));
-  const dir  = (_sortDir[colIdx] = !_sortDir[colIdx]);
-  rows.sort((a, b) => {{
-    const va = a.cells[colIdx].textContent.trim();
-    const vb = b.cells[colIdx].textContent.trim();
+  const dir = (_sortDir[colIdx] = !_sortDir[colIdx]);
+  _allCells = _allCells.slice().sort((a, b) => {{
+    let va, vb;
+    if (colIdx === 0) {{ va = a.cell_id; vb = b.cell_id; }}
+    else if (colIdx === 1) {{ va = a.extract_count; vb = b.extract_count; }}
+    else if (colIdx === 2) {{ va = a.harmonized_count; vb = b.harmonized_count; }}
+    else if (colIdx === 3) {{ va = a.not_harmonized_count; vb = b.not_harmonized_count; }}
+    else if (colIdx === 4) {{
+      const tot = a.extract_count > 0 ? a.extract_count : 1;
+      const totb = b.extract_count > 0 ? b.extract_count : 1;
+      va = a.harmonized_count / tot;
+      vb = b.harmonized_count / totb;
+    }}
+    else if (colIdx === 5) {{ va = a.last_file_modified || ''; vb = b.last_file_modified || ''; }}
+    else {{ va = ''; vb = ''; }}
     const na = parseFloat(va), nb = parseFloat(vb);
-    const cmp = isNaN(na) ? va.localeCompare(vb) : na - nb;
+    const cmp = isNaN(na) || isNaN(nb) ? String(va).localeCompare(String(vb)) : na - nb;
     return dir ? cmp : -cmp;
   }});
-  rows.forEach(r => {{
-    const next = r.nextElementSibling;
-    tbody.appendChild(r);
-    if (next && next.classList.contains('detail-row')) tbody.appendChild(next);
-  }});
+  renderRows(_allCells);
 }}
 </script>
 </body>

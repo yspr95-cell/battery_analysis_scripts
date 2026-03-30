@@ -37,11 +37,14 @@ if __name__ == "__main__":
 
     try:
         paths = PATHS_OBJ(base_path=base_path)
+        bp = Path(base_path)
+        project_name = "/".join(bp.parts[-2:]) if len(bp.parts) >= 2 else bp.name
         gen = DashboardGenerator(
             None,
             logs_path=paths.logs_path,
             extract_path=paths.extract_path,
             harmonized_path=paths.harmonized_path,
+            project_name=project_name,
         )
         out = paths.logs_path / "harmonize_dashboard.html"
         gen.generate(out)

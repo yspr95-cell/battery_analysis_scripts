@@ -26,6 +26,8 @@ _COLUMNS = [
     "Unknown",
     "Cell_IDs",             # comma-separated string
     "Corrupt_files_json",   # JSON string: {cellid: [filenames]}
+    "Ignored_files",        # comma-separated list of ignored file names
+    "Unknown_files",        # comma-separated list of unknown file names
     "Archive_moved",        # True | False | —
     "Status",               # Success | Partial | Failed
 ]
@@ -78,8 +80,10 @@ class ExtractionTraceLog:
         to_copy  = len(entry.get("to_copy", {}).get("meta", {}))
         copied   = len(entry.get("copied_files_meta", {}))
         corrupt  = len(entry.get("corrupted", {}).get("names", []))
-        ignored  = len(entry.get("to_ignore", {}).get("names", []))
-        unknown  = len(entry.get("unknown", {}).get("names", []))
+        ignored_names_list = [Path(n).name for n in entry.get("to_ignore", {}).get("names", [])]
+        unknown_names_list = [Path(n).name for n in entry.get("unknown", {}).get("names", [])]
+        ignored  = len(ignored_names_list)
+        unknown  = len(unknown_names_list)
 
         # Cell IDs from copied files
         cell_ids = sorted({
@@ -118,6 +122,8 @@ class ExtractionTraceLog:
             "Unknown":          str(unknown),
             "Cell_IDs":         ", ".join(cell_ids) if cell_ids else "—",
             "Corrupt_files_json": json.dumps(corrupt_by_cell) if corrupt_by_cell else "—",
+            "Ignored_files":    ", ".join(ignored_names_list) if ignored_names_list else "—",
+            "Unknown_files":    ", ".join(unknown_names_list) if unknown_names_list else "—",
             "Archive_moved":    archive_moved,
             "Status":           status,
         }
@@ -203,7 +209,9 @@ def _write_excel(df: pd.DataFrame, path: Path):
         COL_WIDTHS = {
             "Run_timestamp": 20, "PC_hostname": 16, "ZIP_name": 40, "ZIP_path": 70,
             "To_copy": 10, "Copied": 10, "Corrupt": 10, "Ignored": 10, "Unknown": 10,
-            "Cell_IDs": 40, "Corrupt_files_json": 60, "Archive_moved": 16, "Status": 12,
+            "Cell_IDs": 40, "Corrupt_files_json": 60,
+            "Ignored_files": 60, "Unknown_files": 60,
+            "Archive_moved": 16, "Status": 12,
         }
         for col_idx, col_name in enumerate(df.columns, start=1):
             ws.column_dimensions[get_column_letter(col_idx)].width = COL_WIDTHS.get(col_name, 16)

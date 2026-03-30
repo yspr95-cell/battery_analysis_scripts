@@ -78,6 +78,9 @@ def _build_zip_rows(status_dict: dict) -> list[dict]:
         else:
             overall = "Failed"
 
+        ignored_names = [Path(n).name for n in entry.get("to_ignore", {}).get("names", [])]
+        unknown_names = [Path(n).name for n in entry.get("unknown", {}).get("names", [])]
+
         rows.append({
             "zip_name":        zip_name,
             "zip_path":        zip_path_str,
@@ -86,6 +89,8 @@ def _build_zip_rows(status_dict: dict) -> list[dict]:
             "corrupt":         corrupt,
             "ignored":         ignored,
             "unknown":         unknown,
+            "ignored_names":   ignored_names,
+            "unknown_names":   unknown_names,
             "cell_ids":        cell_ids,
             "cell_details":    cell_details,
             "corrupt_by_cell": corrupt_by_cell,
@@ -209,6 +214,12 @@ def _merge_historical(live_rows: list[dict], logs_path: Path) -> list[dict]:
             for cid in cell_ids
         }
 
+        # Parse ignored/unknown file names from the PC log if available
+        ignored_raw = str(row.get("Ignored_files", ""))
+        unknown_raw = str(row.get("Unknown_files", ""))
+        ignored_names = [f.strip() for f in ignored_raw.split(",") if f.strip() and f.strip() != "—"]
+        unknown_names = [f.strip() for f in unknown_raw.split(",") if f.strip() and f.strip() != "—"]
+
         live_rows.append({
             "zip_name":        str(row.get("ZIP_name", "?")),
             "zip_path":        zp,
@@ -217,6 +228,8 @@ def _merge_historical(live_rows: list[dict], logs_path: Path) -> list[dict]:
             "corrupt":         _int(row.get("Corrupt")),
             "ignored":         _int(row.get("Ignored")),
             "unknown":         _int(row.get("Unknown")),
+            "ignored_names":   ignored_names,
+            "unknown_names":   unknown_names,
             "cell_ids":        cell_ids,
             "cell_details":    hist_cell_details,
             "corrupt_by_cell": corrupt_by_cell,
@@ -300,14 +313,6 @@ def _build_html(zip_rows: list[dict], run_ts: str, hostname: str) -> str:
   .card .val {{ font-size: 2rem; font-weight: 700; }}
   .card .lbl {{ font-size: 0.78rem; color: #6c757d; margin-top: 4px; text-transform: uppercase; letter-spacing: .5px; }}
 
-  /* ── Chart ── */
-  .chart-wrap {{
-    background: white; border-radius: 10px; margin: 0 32px 24px;
-    padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,.07);
-  }}
-  .chart-wrap h2 {{ font-size: 1rem; color: var(--blue-dark); margin-bottom: 14px; }}
-  #barChart {{ max-height: 260px; }}
-
   /* ── Main table ── */
   .section {{ margin: 0 32px 32px; }}
   .section h2 {{ font-size: 1rem; color: var(--blue-dark); margin-bottom: 10px; }}
@@ -354,6 +359,14 @@ def _build_html(zip_rows: list[dict], run_ts: str, hostname: str) -> str:
   .corrupt-table td {{ font-size: .78rem; padding: 5px 12px; background: #fff5f5; border-bottom: 1px solid #fdd; }}
   .corrupt-table tr:last-child td {{ border-bottom: none; }}
 
+  /* Ignored / Unknown file lists */
+  .file-list-table {{ border-collapse: collapse; border-radius: 6px; overflow: hidden; width: auto; box-shadow: none; }}
+  .file-list-table.ignored th {{ background: #a0792e; font-size: .76rem; padding: 6px 12px; }}
+  .file-list-table.unknown th {{ background: #6b5ea8; font-size: .76rem; padding: 6px 12px; }}
+  .file-list-table td {{ font-size: .78rem; padding: 5px 12px; background: #fdf9f0; border-bottom: 1px solid #eed; }}
+  .file-list-table.unknown td {{ background: #f7f5ff; border-bottom: 1px solid #ddd; }}
+  .file-list-table tr:last-child td {{ border-bottom: none; }}
+
   /* ── Badges ── */
   .badge {{
     display: inline-block; padding: 2px 8px; border-radius: 4px;
@@ -391,11 +404,6 @@ def _build_html(zip_rows: list[dict], run_ts: str, hostname: str) -> str:
 
 <div class="cards" id="cards"></div>
 
-<div class="chart-wrap">
-  <h2>Files per ZIP — Copied / Corrupt / Ignored</h2>
-  <canvas id="barChart"></canvas>
-</div>
-
 <div class="filter-bar">
   <label>Filter:</label>
   <input type="text" id="searchInput" placeholder="Search ZIP name or cell ID …" oninput="applyFilter()">
@@ -429,11 +437,6 @@ def _build_html(zip_rows: list[dict], run_ts: str, hostname: str) -> str:
 </div>
 
 <script>
-// ── Inline Chart.js (CDN) ─────────────────────────────────────────────────
-// Note: requires internet for first load; for offline use, bundle Chart.js separately.
-</script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-<script>
 const DATA = {data_json};
 
 // ── Summary cards ────────────────────────────────────────────────────────────
@@ -450,29 +453,6 @@ const DATA = {data_json};
   const wrap = document.getElementById('cards');
   defs.forEach(d => {{
     wrap.innerHTML += `<div class="card ${{d.cls}}"><div class="val">${{d.val}}</div><div class="lbl">${{d.lbl}}</div></div>`;
-  }});
-}})();
-
-// ── Bar chart ────────────────────────────────────────────────────────────────
-(function() {{
-  const rows = DATA.rows;
-  const labels = rows.map(r => r.zip_name.length > 35 ? r.zip_name.slice(0,33)+'…' : r.zip_name);
-  new Chart(document.getElementById('barChart'), {{
-    type: 'bar',
-    data: {{
-      labels,
-      datasets: [
-        {{ label: 'Copied',  data: rows.map(r => r.copied),  backgroundColor: '#70AD47' }},
-        {{ label: 'Corrupt', data: rows.map(r => r.corrupt), backgroundColor: '#FF4C4C' }},
-        {{ label: 'Ignored', data: rows.map(r => r.ignored), backgroundColor: '#ED7D31' }},
-        {{ label: 'Unknown', data: rows.map(r => r.unknown), backgroundColor: '#FFD966' }},
-      ]
-    }},
-    options: {{
-      responsive: true,
-      plugins: {{ legend: {{ position: 'top' }} }},
-      scales: {{ x: {{ stacked: true }}, y: {{ stacked: true, beginAtZero: true }} }}
-    }}
   }});
 }})();
 
@@ -540,11 +520,27 @@ function buildDetail(row) {{
     corruptHtml += '</tbody></table></div>';
   }}
 
-  // ── Archive path ──────────────────────────────────────────────────────────
-  const pathHtml = `<div class="detail-section"><h3>Archive Path</h3>
-    <code style="font-size:.78rem;color:#555;word-break:break-all">${{row.zip_path}}</code></div>`;
+  // ── Ignored files ─────────────────────────────────────────────────────────
+  let ignoredHtml = '';
+  const ignoredNames = row.ignored_names || [];
+  if (ignoredNames.length > 0) {{
+    ignoredHtml = '<div class="detail-section"><h3 style="color:#a0792e">Ignored Files (' + ignoredNames.length + ')</h3>';
+    ignoredHtml += '<table class="file-list-table ignored"><thead><tr><th>File Name</th></tr></thead><tbody>';
+    ignoredNames.forEach(f => {{ ignoredHtml += `<tr><td>${{f}}</td></tr>`; }});
+    ignoredHtml += '</tbody></table></div>';
+  }}
 
-  return `<div class="detail-inner">${{cellTable}}${{corruptHtml}}${{pathHtml}}</div>`;
+  // ── Unknown files ─────────────────────────────────────────────────────────
+  let unknownHtml = '';
+  const unknownNames = row.unknown_names || [];
+  if (unknownNames.length > 0) {{
+    unknownHtml = '<div class="detail-section"><h3 style="color:#6b5ea8">Unknown Files (' + unknownNames.length + ')</h3>';
+    unknownHtml += '<table class="file-list-table unknown"><thead><tr><th>File Name</th></tr></thead><tbody>';
+    unknownNames.forEach(f => {{ unknownHtml += `<tr><td>${{f}}</td></tr>`; }});
+    unknownHtml += '</tbody></table></div>';
+  }}
+
+  return `<div class="detail-inner">${{cellTable}}${{corruptHtml}}${{ignoredHtml}}${{unknownHtml}}</div>`;
 }}
 
 let _allRows = DATA.rows.slice();  // working copy for sort/filter

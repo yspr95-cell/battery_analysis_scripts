@@ -145,6 +145,9 @@ QPushButton#add_btn { background: #313244; color: #a6e3a1; }
 QPushButton#remove_btn { background: #313244; color: #f38ba8; }
 QPushButton#dup_btn { background: #313244; color: #89b4fa; }
 
+QPushButton#reload_dash_btn { background: #89dceb; color: #1e1e2e; font-weight: bold; padding: 6px 14px; }
+QPushButton#reload_dash_btn:hover { background: #6ec8d6; }
+
 /* ── Console ── */
 QPlainTextEdit#console {
     background: #11111b;
@@ -390,9 +393,8 @@ class ConfigEditorWidget(QWidget):
         self.dashboard_cb = QCheckBox("Generate HTML dashboard after run")
         self.dashboard_cb.stateChanged.connect(self._on_change)
         dash_row.addWidget(self.dashboard_cb)
-        self.reload_dash_btn = QPushButton("⟳")
+        self.reload_dash_btn = QPushButton("⟳  Refresh Dashboard")
         self.reload_dash_btn.setObjectName("reload_dash_btn")
-        self.reload_dash_btn.setFixedSize(28, 28)
         self.reload_dash_btn.setToolTip("Regenerate dashboard now (without running the pipeline)")
         self.reload_dash_btn.clicked.connect(self._emit_reload_dashboard)
         dash_row.addWidget(self.reload_dash_btn)

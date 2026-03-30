@@ -14,6 +14,7 @@ import logging
 import socket
 import time
 import warnings
+from datetime import datetime
 from pathlib import Path
 
 from src.paths import PATHS_OBJ
@@ -50,7 +51,8 @@ def run_extraction(
 
     # ── Initialise paths ──────────────────────────────────────────────────────
     paths = PATHS_OBJ(base_path)
-    timestr = time.strftime("%Y%m%d_%H%M%S")
+    timestr = time.strftime("%Y%m%d_%H%M%S")          # used for file names
+    run_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # human-readable timestamp for logs
 
     # ── Logging ───────────────────────────────────────────────────────────────
     logging.basicConfig(
@@ -69,20 +71,35 @@ def run_extraction(
 
     # ── Pre-flight checks ─────────────────────────────────────────────────────
     if count_files_in_folder(paths.backlog_path) > 0:
-        msg = f"Backlog is not empty — clear it before running.\n >> {paths.backlog_path}"
+        msg = (
+            f"[ERROR] Backlog is not empty — clear it before running.\n"
+            f"  >> {paths.backlog_path}"
+        )
         logging.critical(msg)
-        warnings.warn("\033[91m" + msg + "\033[0m", UserWarning)
-        return {}
+        print(msg, flush=True)
+        raise RuntimeError(msg)
 
     if not paths.check_if_exists():
-        msg = f"Folder structure is incomplete — check base_path.\n >> {paths.base_path}"
+        msg = (
+            f"[ERROR] Folder structure is incomplete — check base_path.\n"
+            f"  >> {paths.base_path}"
+        )
         logging.critical(msg)
-        warnings.warn("\033[91m" + msg + "\033[0m", UserWarning)
-        return {}
+        print(msg, flush=True)
+        raise RuntimeError(msg)
 
     # ── Stage 1: Detect & test archives ───────────────────────────────────────
     print("[Extraction] Stage 1/4 — Detecting archives …")
     archives_dict = detect_archive(paths.dump_path, recursive=True, include_substrings=zip_files)
+
+    if not archives_dict.get("TestedArchives"):
+        msg = (
+            f"[ERROR] No ZIP archives found in incoming folder.\n"
+            f"  >> {paths.dump_path}"
+        )
+        logging.critical(msg)
+        print(msg, flush=True)
+        raise RuntimeError(msg)
 
     # ── Stage 2: Extract + filter by config ───────────────────────────────────
     print("[Extraction] Stage 2/4 — Extracting archives …")
@@ -144,7 +161,7 @@ def run_extraction(
         pc_logs_dir = paths.logs_path / "pc_logs"
         pc_logs_dir.mkdir(exist_ok=True)
         trace = ExtractionTraceLog(pc_logs_dir / f"extraction_trace_log_{hostname}.xlsx", hostname)
-        trace.record_run(main_status_dict, timestr)
+        trace.record_run(main_status_dict, run_timestamp)
         trace.save()
     except Exception as e:
         logging.warning(f"TraceLog write failed: {e}")
