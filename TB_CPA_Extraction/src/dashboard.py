@@ -12,7 +12,7 @@ Usage (called automatically from extraction_run.py):
 
 import json
 import socket
-from datetime import datetime
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -32,7 +32,7 @@ class DashboardGenerator:
 
     def __init__(self, status_dict: dict, logs_path: Path):
         self._zip_rows = _build_zip_rows(status_dict)
-        self._run_ts   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._run_ts   = time.strftime("%Y-%m-%d %H:%M:%S")
         self._hostname = socket.gethostname()
 
         # Merge historical data for ZIPs not in current run

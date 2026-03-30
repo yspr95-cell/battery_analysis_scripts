@@ -26,7 +26,6 @@ import os
 import sys
 import time
 from collections import defaultdict
-from datetime import datetime
 from pathlib import Path
 
 # ── Logging setup (do this before any local imports) ──────────────────────────
@@ -57,7 +56,7 @@ if not PATHS.check_if_exists():
     sys.exit(1)
 
 # File-based logging
-ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+ts = time.strftime('%Y%m%d_%H%M%S')
 log_file = PATHS.debug_path / f'hm_{ts}_v2.log'
 file_handler = logging.FileHandler(log_file, encoding='utf-8')
 file_handler.setFormatter(logging.Formatter(LOG_FORMAT))

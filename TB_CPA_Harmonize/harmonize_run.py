@@ -10,7 +10,7 @@ import logging
 import socket
 import warnings
 from pathlib import Path
-from datetime import datetime
+
 
 from src.dependencies import *
 from harmonize.hm_supplier_config import detect_supplier
@@ -65,7 +65,7 @@ def run_harmonize(
         level=logging.DEBUG,
         format='%(asctime)s - %(levelname)s - %(message)s',
     )
-    run_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    run_timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     logging.info(f"\n >>>>>>>>>> Running harmonize() <<<<<<<<<<< \n")
     logging.info(
         f"Note: Skip Rerun is {skip_rerun}, Copy action is {copy_action}, "

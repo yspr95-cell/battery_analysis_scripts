@@ -14,7 +14,7 @@ import logging
 import socket
 import time
 import warnings
-from datetime import datetime
+
 from pathlib import Path
 
 from src.paths import PATHS_OBJ
@@ -52,7 +52,7 @@ def run_extraction(
     # ── Initialise paths ──────────────────────────────────────────────────────
     paths = PATHS_OBJ(base_path)
     timestr = time.strftime("%Y%m%d_%H%M%S")          # used for file names
-    run_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # human-readable timestamp for logs
+    run_timestamp = time.strftime("%Y-%m-%d %H:%M:%S")  # human-readable timestamp for logs
 
     # ── Logging ───────────────────────────────────────────────────────────────
     logging.basicConfig(

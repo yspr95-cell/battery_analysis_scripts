@@ -7,7 +7,7 @@ Launch with:  python harmonize_gui.py
 import json
 import sys
 import tempfile
-from datetime import datetime
+import time
 from pathlib import Path
 
 from PySide6.QtCore import (Qt, QThread, Signal, QSize)
@@ -501,7 +501,15 @@ class ConfigEditorWidget(QWidget):
         self.run_requested.emit(self.read_config())
 
     def _emit_reload_dashboard(self):
-        self.reload_dashboard_requested.emit(self.read_config())
+        reply = QMessageBox.question(
+            self,
+            "Regenerate Dashboard",
+            "This will overwrite the existing HTML dashboard for this project.\n\nProceed?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            self.reload_dashboard_requested.emit(self.read_config())
 
 
 # ── ConsoleWidget ─────────────────────────────────────────────────────────────
@@ -540,7 +548,7 @@ class ConsoleWidget(QWidget):
         layout.addWidget(self.text)
 
     def append(self, line: str):
-        ts = datetime.now().strftime("%H:%M:%S")
+        ts = time.strftime("%H:%M:%S")
         self.text.appendPlainText(f"[{ts}]  {line}")
         self.text.moveCursor(QTextCursor.End)
 

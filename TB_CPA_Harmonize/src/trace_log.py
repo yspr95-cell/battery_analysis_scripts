@@ -7,10 +7,10 @@ Multi-PC safety: each PC writes to its own file:
 The dashboard merges all per-PC logs at generation time.
 """
 
+import time
 from pathlib import Path
 import pandas as pd
 import os
-from datetime import datetime
 
 # ── Column order for the Excel sheet ────────────────────────────────────────
 _COLUMNS = [
@@ -96,7 +96,7 @@ class TraceLog:
 
         if harmonized_file_path is not None and Path(harmonized_file_path).exists():
             output_size_kb = _get_size_kb(Path(harmonized_file_path))
-            date_harmonized = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            date_harmonized = time.strftime("%Y-%m-%d %H:%M:%S")
             current_status = "OK"
 
         row_data = {

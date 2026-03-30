@@ -48,8 +48,8 @@ PROJECTS = [
 import sys
 import os
 import socket
+import time
 from pathlib import Path
-from datetime import datetime
 
 # Ensure the package root (TB_CPA_Harmonize_v1.2/) is on sys.path
 _SCRIPT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
@@ -72,7 +72,7 @@ def _acquire_lock() -> bool:
         except Exception:
             pass
         return False
-    _LOCK_FILE.write_text(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    _LOCK_FILE.write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
     return True
 
 

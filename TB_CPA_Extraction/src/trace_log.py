@@ -10,7 +10,6 @@ The dashboard merges all per-PC logs at generation time.
 import json
 from pathlib import Path
 import pandas as pd
-from datetime import datetime
 import re
 
 # ── Column order for the Excel sheet ─────────────────────────────────────────

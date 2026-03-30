@@ -13,7 +13,6 @@ Call from run_config.py or directly:
 import logging
 import socket
 import time
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -69,7 +68,7 @@ def run_evaluate(
 
     # ── Logging ───────────────────────────────────────────────────────────────
     _setup_logging(log_path)
-    run_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    run_ts = time.strftime("%Y-%m-%d %H:%M:%S")
     logger.info(f"\n>>>>>>>>>> TB_CPA_Evaluate  —  run started at {run_ts} <<<<<<<<<<\n")
     logger.info(f"Harmonized path : {harmonized_path}")
     logger.info(f"Output root     : {step_evals_root}")

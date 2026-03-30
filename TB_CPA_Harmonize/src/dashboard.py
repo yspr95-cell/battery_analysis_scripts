@@ -9,6 +9,7 @@ The last-modified time of the .csv is shown if present.
 """
 
 import json
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -44,7 +45,7 @@ class DashboardGenerator:
                 "total_harmonized": 0, "total_not_harmonized": 0,
             }
 
-        run_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        run_ts = time.strftime("%Y-%m-%d %H:%M:%S")
         html   = _build_html(cell_summary, total_stats, run_ts, self._project_name)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
