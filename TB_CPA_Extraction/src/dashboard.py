@@ -590,7 +590,8 @@ function sortTable(colIdx) {{
     let va = a[cols[colIdx]], vb = b[cols[colIdx]];
     if (cols[colIdx] === 'cell_ids') {{ va = va.length; vb = vb.length; }}
     if (typeof va === 'boolean') {{ va = va ? 1 : 0; vb = vb ? 1 : 0; }}
-    const na = parseFloat(va), nb = parseFloat(vb);
+    const isString = cols[colIdx] === 'run_ts' || cols[colIdx] === 'zip_name' || cols[colIdx] === 'overall';
+    const na = isString ? NaN : parseFloat(va), nb = isString ? NaN : parseFloat(vb);
     const cmp = isNaN(na) ? String(va).localeCompare(String(vb)) : na - nb;
     return dir ? cmp : -cmp;
   }});
