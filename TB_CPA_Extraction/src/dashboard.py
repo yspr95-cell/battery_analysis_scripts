@@ -1,0 +1,602 @@
+"""
+dashboard.py  —  TB_CPA_Extraction v1.2
+Generates a self-contained HTML dashboard from the extraction status dict.
+
+Multi-PC: merges all extraction_trace_log_*.xlsx from 06_Logs/pc_logs/
+so the dashboard reflects every PC that has processed files.
+
+Usage (called automatically from extraction_run.py):
+    gen = DashboardGenerator(status_dict, logs_path)
+    gen.generate(logs_path / "extraction_dashboard.html")
+"""
+
+import json
+import socket
+import time
+from pathlib import Path
+
+import pandas as pd
+
+
+class DashboardGenerator:
+    """
+    Builds the extraction dashboard HTML.
+
+    Data sources (in priority order):
+      1. The live status_dict from the current run (always fresh).
+      2. Merged per-PC trace logs from pc_logs/ (historical runs on other PCs).
+
+    The live run's data always takes precedence over stored log data for the
+    same ZIP archive (identified by ZIP_path).
+    """
+
+    def __init__(self, status_dict: dict, logs_path: Path):
+        self._run_ts   = time.strftime("%Y-%m-%d %H:%M:%S")
+        self._zip_rows = _build_zip_rows(status_dict, self._run_ts)
+        self._hostname = socket.gethostname()
+
+        # Merge historical data for ZIPs not in current run
+        self._zip_rows = _merge_historical(self._zip_rows, logs_path)
+
+    def generate(self, output_path: Path):
+        html = _build_html(self._zip_rows, self._run_ts, self._hostname)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(html, encoding="utf-8")
+        print(f"[Dashboard] Generated → {output_path.name}")
+
+
+# ── Data extraction ──────────────────────────────────────────────────────────
+
+def _build_zip_rows(status_dict: dict, run_ts: str) -> list[dict]:
+    """Convert the pipeline status_dict into a flat list of per-ZIP dicts."""
+    rows = []
+    for zip_path_str, entry in status_dict.items():
+        zip_name = Path(zip_path_str).name
+
+        to_copy  = len(entry.get("to_copy", {}).get("meta", {}))
+        copied   = len(entry.get("copied_files_meta", {}))
+        corrupt  = len(entry.get("corrupted", {}).get("names", []))
+        ignored  = len(entry.get("to_ignore", {}).get("names", []))
+        unknown  = len(entry.get("unknown", {}).get("names", []))
+
+        # Corrupt files grouped by cell ID (needed by _build_cell_details too)
+        corrupt_by_cell = _group_corrupt(
+            entry.get("corrupted", {}).get("names", []),
+            entry.get("to_copy", {}).get("meta", {}),
+        )
+
+        # Per-cell breakdown: to_copy / copied / corrupt / supplier
+        cell_details = _build_cell_details(entry, corrupt_by_cell)
+        cell_ids = sorted(cell_details.keys())
+
+        archive_moved = bool(entry.get("compressed_file_meta", {}).get("copied_to_Archived"))
+
+        if corrupt == 0 and unknown == 0:
+            overall = "Success"
+        elif copied > 0:
+            overall = "Partial"
+        else:
+            overall = "Failed"
+
+        ignored_names = [Path(n).name for n in entry.get("to_ignore", {}).get("names", [])]
+        unknown_names = [Path(n).name for n in entry.get("unknown", {}).get("names", [])]
+
+        rows.append({
+            "zip_name":        zip_name,
+            "zip_path":        zip_path_str,
+            "run_ts":          run_ts,
+            "to_copy":         to_copy,
+            "copied":          copied,
+            "corrupt":         corrupt,
+            "ignored":         ignored,
+            "unknown":         unknown,
+            "ignored_names":   ignored_names,
+            "unknown_names":   unknown_names,
+            "cell_ids":        cell_ids,
+            "cell_details":    cell_details,
+            "corrupt_by_cell": corrupt_by_cell,
+            "archive_moved":   archive_moved,
+            "overall":         overall,
+        })
+    return rows
+
+
+def _extract_cellid(file_path_str: str, cellid_prefix: str) -> str:
+    """Derive a cell ID from a file path using its prefix (mirrors file_handling logic)."""
+    import re
+    stem = Path(file_path_str).stem
+    if cellid_prefix and cellid_prefix in stem:
+        splits = stem.split(cellid_prefix)
+        if len(splits) > 1:
+            return cellid_prefix + re.split(r"[^a-zA-Z0-9]+", splits[1])[0]
+    return "unknown"
+
+
+def _build_cell_details(entry: dict, corrupt_by_cell: dict) -> dict:
+    """
+    Build per-cell stats from the status dict entry.
+
+    Returns:
+        {cellid: {"to_copy": int, "copied": int, "corrupt": int, "supplier": str}}
+    """
+    cell: dict[str, dict] = {}
+
+    def _ensure(cid, supplier="—"):
+        if cid not in cell:
+            cell[cid] = {"to_copy": 0, "copied": 0, "corrupt": 0, "supplier": supplier}
+        if supplier and supplier != "—":
+            cell[cid]["supplier"] = supplier
+
+    # to_copy — one entry per file in to_copy.meta (before splitting)
+    for path_str, meta in entry.get("to_copy", {}).get("meta", {}).items():
+        prefix   = meta.get("cellid_prefix", "")
+        supplier = meta.get("supplier", "—") or "—"
+        cellid   = _extract_cellid(path_str, prefix)
+        _ensure(cellid, supplier)
+        cell[cellid]["to_copy"] += 1
+
+    # copied — one entry per file actually placed in the cell folder
+    for path_str, meta in entry.get("copied_files_meta", {}).items():
+        cellid   = meta.get("cellid", "unknown") or "unknown"
+        supplier = meta.get("supplier", "—") or "—"
+        _ensure(cellid, supplier)
+        cell[cellid]["copied"] += 1
+
+    # corrupt — from already-grouped corrupt_by_cell
+    for cellid, files in corrupt_by_cell.items():
+        _ensure(cellid)
+        cell[cellid]["corrupt"] += len(files)
+
+    return cell
+
+
+def _group_corrupt(corrupt_names: list, to_copy_meta: dict) -> dict:
+    """Group corrupt file names by inferred cell ID."""
+    import re
+    result: dict[str, list] = {}
+    for name in corrupt_names:
+        stem = Path(name).stem
+        cellid = "unknown"
+        for path_key, meta in to_copy_meta.items():
+            if Path(path_key).name == Path(name).name:
+                prefix = meta.get("cellid_prefix", "")
+                if prefix and prefix in stem:
+                    splits = stem.split(prefix)
+                    if len(splits) > 1:
+                        cellid = prefix + re.split(r"[^a-zA-Z0-9]+", splits[1])[0]
+                    else:
+                        cellid = prefix
+                break
+        result.setdefault(cellid, []).append(Path(name).name)
+    return result
+
+
+def _merge_historical(live_rows: list[dict], logs_path: Path) -> list[dict]:
+    """
+    Append rows from pc_logs/ for ZIP archives not present in the live run.
+    This shows a complete picture including ZIPs processed on other PCs.
+    """
+    live_paths = {r["zip_path"] for r in live_rows}
+    pc_logs_dir = logs_path / "pc_logs"
+    if not pc_logs_dir.exists():
+        return live_rows
+
+    frames = []
+    for p in sorted(pc_logs_dir.glob("extraction_trace_log_*.xlsx")):
+        try:
+            frames.append(pd.read_excel(p, dtype=str))
+        except Exception as e:
+            print(f"[Dashboard] Warning: could not read {p.name}: {e}")
+
+    if not frames:
+        return live_rows
+
+    hist_df = pd.concat(frames, ignore_index=True)
+
+    for _, row in hist_df.iterrows():
+        zp = str(row.get("ZIP_path", ""))
+        if zp in live_paths:
+            continue  # live run data takes precedence
+        try:
+            corrupt_by_cell = json.loads(str(row.get("Corrupt_files_json", "{}")))
+        except Exception:
+            corrupt_by_cell = {}
+        cell_ids_raw = str(row.get("Cell_IDs", ""))
+        cell_ids = [c.strip() for c in cell_ids_raw.split(",") if c.strip() and c.strip() != "—"]
+
+        # Build minimal cell_details from historical data (no supplier info available)
+        hist_cell_details = {
+            cid: {
+                "to_copy":  0,
+                "copied":   0,
+                "corrupt":  len(corrupt_by_cell.get(cid, [])),
+                "supplier": "—",
+            }
+            for cid in cell_ids
+        }
+
+        # Parse ignored/unknown file names from the PC log if available
+        ignored_raw = str(row.get("Ignored_files", ""))
+        unknown_raw = str(row.get("Unknown_files", ""))
+        ignored_names = [f.strip() for f in ignored_raw.split(",") if f.strip() and f.strip() != "—"]
+        unknown_names = [f.strip() for f in unknown_raw.split(",") if f.strip() and f.strip() != "—"]
+
+        live_rows.append({
+            "zip_name":        str(row.get("ZIP_name", "?")),
+            "zip_path":        zp,
+            "run_ts":          str(row.get("Run_timestamp", "—")),
+            "to_copy":         _int(row.get("To_copy")),
+            "copied":          _int(row.get("Copied")),
+            "corrupt":         _int(row.get("Corrupt")),
+            "ignored":         _int(row.get("Ignored")),
+            "unknown":         _int(row.get("Unknown")),
+            "ignored_names":   ignored_names,
+            "unknown_names":   unknown_names,
+            "cell_ids":        cell_ids,
+            "cell_details":    hist_cell_details,
+            "corrupt_by_cell": corrupt_by_cell,
+            "archive_moved":   str(row.get("Archive_moved", "")).lower() == "true",
+            "overall":         str(row.get("Status", "—")),
+        })
+
+    return live_rows
+
+
+def _int(val) -> int:
+    try:
+        return int(val)
+    except Exception:
+        return 0
+
+
+# ── HTML builder ─────────────────────────────────────────────────────────────
+
+def _build_html(zip_rows: list[dict], run_ts: str, hostname: str) -> str:
+    # Totals
+    total_zips    = len(zip_rows)
+    total_to_copy = sum(r["to_copy"]  for r in zip_rows)
+    total_copied  = sum(r["copied"]   for r in zip_rows)
+    total_corrupt = sum(r["corrupt"]  for r in zip_rows)
+    total_ignored = sum(r["ignored"]  for r in zip_rows)
+    total_unknown = sum(r["unknown"]  for r in zip_rows)
+
+    totals = {
+        "zips":    total_zips,
+        "to_copy": total_to_copy,
+        "copied":  total_copied,
+        "corrupt": total_corrupt,
+        "ignored": total_ignored,
+        "unknown": total_unknown,
+    }
+
+    data_json = json.dumps({"rows": zip_rows, "totals": totals}, indent=2, default=str)
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Extraction Dashboard — TB_CPA v1.2</title>
+<style>
+  :root {{
+    --blue-dark:  #1F4E79;
+    --blue-mid:   #2E75B6;
+    --blue-light: #D6E4F0;
+    --green:      #70AD47;
+    --orange:     #ED7D31;
+    --red:        #FF4C4C;
+    --yellow:     #FFD966;
+    --grey-bg:    #F4F7FB;
+    --grey-line:  #DEE2E6;
+    --text:       #212529;
+  }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: 'Segoe UI', Arial, sans-serif; background: var(--grey-bg); color: var(--text); }}
+
+  /* ── Header ── */
+  .header {{
+    background: linear-gradient(135deg, var(--blue-dark) 0%, var(--blue-mid) 100%);
+    color: white; padding: 20px 32px;
+  }}
+  .header h1 {{ font-size: 1.5rem; font-weight: 700; letter-spacing: .5px; }}
+  .header .subtitle {{ font-size: 0.85rem; opacity: .8; margin-top: 4px; }}
+
+  /* ── Summary cards ── */
+  .cards {{ display: flex; gap: 16px; padding: 20px 32px; flex-wrap: wrap; }}
+  .card {{
+    background: white; border-radius: 10px; padding: 16px 24px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.07); min-width: 120px; flex: 1;
+    border-top: 4px solid var(--blue-mid);
+  }}
+  .card.green  {{ border-top-color: var(--green); }}
+  .card.orange {{ border-top-color: var(--orange); }}
+  .card.red    {{ border-top-color: var(--red); }}
+  .card.yellow {{ border-top-color: var(--yellow); }}
+  .card .val {{ font-size: 2rem; font-weight: 700; }}
+  .card .lbl {{ font-size: 0.78rem; color: #6c757d; margin-top: 4px; text-transform: uppercase; letter-spacing: .5px; }}
+
+  /* ── Main table ── */
+  .section {{ margin: 0 32px 32px; }}
+  .section h2 {{ font-size: 1rem; color: var(--blue-dark); margin-bottom: 10px; }}
+  table {{ width: 100%; border-collapse: collapse; background: white;
+           border-radius: 10px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,.07); }}
+  th {{
+    background: var(--blue-dark); color: white; text-align: left;
+    padding: 10px 14px; font-size: .82rem; text-transform: uppercase; letter-spacing: .4px;
+    cursor: pointer; user-select: none;
+  }}
+  th:hover {{ background: var(--blue-mid); }}
+  td {{ padding: 10px 14px; font-size: .88rem; border-bottom: 1px solid var(--grey-line); vertical-align: top; }}
+  tr.zip-row {{ cursor: pointer; transition: background .15s; }}
+  tr.zip-row:hover {{ background: var(--blue-light); }}
+  tr.zip-row td.expand-cell::before {{ content: '▶  '; font-size: .7rem; color: var(--blue-mid); }}
+  tr.zip-row.open td.expand-cell::before {{ content: '▼  '; }}
+
+  /* ── Detail panel ── */
+  tr.detail-row td {{ padding: 0; background: #f0f4fa; border-bottom: 2px solid var(--blue-light); }}
+  .detail-inner {{ padding: 16px 24px 20px 40px; }}
+
+  .detail-section {{ margin-bottom: 16px; }}
+  .detail-section h3 {{ font-size: .85rem; color: var(--blue-dark); margin-bottom: 8px; font-weight: 600; }}
+
+  /* Cell ID chips */
+  .chip-list {{ display: flex; flex-wrap: wrap; gap: 6px; }}
+  .chip {{
+    background: var(--blue-light); color: var(--blue-dark);
+    border-radius: 20px; padding: 3px 12px; font-size: .80rem; font-weight: 600;
+  }}
+
+  /* Cell details table */
+  .cell-table {{ border-collapse: collapse; border-radius: 6px; overflow: hidden; width: 100%; box-shadow: none; }}
+  .cell-table th {{ background: #2E75B6; font-size: .76rem; padding: 7px 14px; cursor: default; }}
+  .cell-table th:hover {{ background: #2E75B6; }}
+  .cell-table td {{ font-size: .80rem; padding: 6px 14px; background: white; border-bottom: 1px solid var(--grey-line); }}
+  .cell-table tr:last-child td {{ border-bottom: none; }}
+  .cell-table .num-red    {{ color: #c0392b; font-weight: 700; }}
+  .cell-table .num-green  {{ color: #276221; font-weight: 700; }}
+
+  /* Corrupt sub-table */
+  .corrupt-table {{ border-collapse: collapse; border-radius: 6px; overflow: hidden; width: auto; box-shadow: none; }}
+  .corrupt-table th {{ background: #c0392b; font-size: .76rem; padding: 6px 12px; }}
+  .corrupt-table td {{ font-size: .78rem; padding: 5px 12px; background: #fff5f5; border-bottom: 1px solid #fdd; }}
+  .corrupt-table tr:last-child td {{ border-bottom: none; }}
+
+  /* Ignored / Unknown file lists */
+  .file-list-table {{ border-collapse: collapse; border-radius: 6px; overflow: hidden; width: auto; box-shadow: none; }}
+  .file-list-table.ignored th {{ background: #a0792e; font-size: .76rem; padding: 6px 12px; }}
+  .file-list-table.unknown th {{ background: #6b5ea8; font-size: .76rem; padding: 6px 12px; }}
+  .file-list-table td {{ font-size: .78rem; padding: 5px 12px; background: #fdf9f0; border-bottom: 1px solid #eed; }}
+  .file-list-table.unknown td {{ background: #f7f5ff; border-bottom: 1px solid #ddd; }}
+  .file-list-table tr:last-child td {{ border-bottom: none; }}
+
+  /* ── Badges ── */
+  .badge {{
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: .76rem; font-weight: 600; white-space: nowrap;
+  }}
+  .badge-Success {{ background: #C6EFCE; color: #276221; }}
+  .badge-Partial  {{ background: #FFEB9C; color: #7D5A00; }}
+  .badge-Failed   {{ background: #FFC7CE; color: #9C0006; }}
+  .badge-moved    {{ background: #C6EFCE; color: #276221; }}
+  .badge-pending  {{ background: #F2F2F2; color: #666; }}
+
+  .num-red    {{ color: #c0392b; font-weight: 700; }}
+  .num-green  {{ color: #276221; font-weight: 700; }}
+  .num-orange {{ color: #7D5A00; font-weight: 700; }}
+
+  /* ── Filter bar ── */
+  .filter-bar {{ margin: 0 32px 16px; display: flex; gap: 10px; align-items: center; }}
+  .filter-bar input {{
+    border: 1px solid var(--grey-line); border-radius: 6px; padding: 6px 12px;
+    font-size: .88rem; width: 300px; background: white;
+  }}
+  .filter-bar label {{ font-size: .85rem; color: #6c757d; }}
+  .filter-bar select {{
+    border: 1px solid var(--grey-line); border-radius: 6px; padding: 6px 10px;
+    font-size: .88rem; background: white;
+  }}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>TB_CPA Extraction Dashboard</h1>
+  <div class="subtitle">Generated: {run_ts} &nbsp;|&nbsp; PC: {hostname} &nbsp;|&nbsp; TB_CPA_Extraction v1.2</div>
+</div>
+
+<div class="cards" id="cards"></div>
+
+<div class="filter-bar">
+  <label>Filter:</label>
+  <input type="text" id="searchInput" placeholder="Search ZIP name or cell ID …" oninput="applyFilter()">
+  <label>Status:</label>
+  <select id="statusFilter" onchange="applyFilter()">
+    <option value="">All</option>
+    <option value="Success">Success</option>
+    <option value="Partial">Partial</option>
+    <option value="Failed">Failed</option>
+  </select>
+</div>
+
+<div class="section">
+  <h2>ZIP Archive Summary &nbsp;<small style="font-weight:normal;color:#6c757d">(click a row to expand details)</small></h2>
+  <table id="zipTable">
+    <thead>
+      <tr>
+        <th onclick="sortTable(0)">ZIP Archive ⇅</th>
+        <th onclick="sortTable(1)">Run Date ⇅</th>
+        <th onclick="sortTable(2)">To Copy ⇅</th>
+        <th onclick="sortTable(3)">Copied ⇅</th>
+        <th onclick="sortTable(4)">Corrupt ⇅</th>
+        <th onclick="sortTable(5)">Ignored ⇅</th>
+        <th onclick="sortTable(6)">Unknown ⇅</th>
+        <th onclick="sortTable(7)">Cells ⇅</th>
+        <th onclick="sortTable(8)">Archived ⇅</th>
+        <th onclick="sortTable(9)">Status ⇅</th>
+      </tr>
+    </thead>
+    <tbody id="zipTbody"></tbody>
+  </table>
+</div>
+
+<script>
+const DATA = {data_json};
+
+// ── Summary cards ────────────────────────────────────────────────────────────
+(function() {{
+  const t = DATA.totals;
+  const defs = [
+    {{ val: t.zips,    lbl: 'ZIP Archives', cls: '' }},
+    {{ val: t.to_copy, lbl: 'To Copy',      cls: '' }},
+    {{ val: t.copied,  lbl: 'Copied',       cls: 'green' }},
+    {{ val: t.corrupt, lbl: 'Corrupt',      cls: 'red' }},
+    {{ val: t.ignored, lbl: 'Ignored',      cls: 'orange' }},
+    {{ val: t.unknown, lbl: 'Unknown',      cls: 'yellow' }},
+  ];
+  const wrap = document.getElementById('cards');
+  defs.forEach(d => {{
+    wrap.innerHTML += `<div class="card ${{d.cls}}"><div class="val">${{d.val}}</div><div class="lbl">${{d.lbl}}</div></div>`;
+  }});
+}})();
+
+// ── Table rendering ──────────────────────────────────────────────────────────
+const tbody = document.getElementById('zipTbody');
+
+function badge(val) {{
+  const cls = val === true ? 'moved' : val === false ? 'pending' : val;
+  const label = val === true ? '✔ Archived' : val === false ? '— Pending' : val;
+  return `<span class="badge badge-${{cls}}">${{label}}</span>`;
+}}
+
+function numCell(n, cls) {{
+  if (n === 0) return `<td>0</td>`;
+  return `<td class="${{cls}}">${{n}}</td>`;
+}}
+
+function buildDetail(row) {{
+  const cbc = row.corrupt_by_cell || {{}};
+
+  // ── Cell ID chips ─────────────────────────────────────────────────────────
+  let cellTable = '<div class="detail-section"><h3>Cell IDs (' + row.cell_ids.length + ')</h3>';
+  if (row.cell_ids.length === 0) {{
+    cellTable += '<p style="color:#999;font-size:.82rem">No cell IDs found (no files copied)</p>';
+  }} else {{
+    cellTable += '<div class="chip-list">';
+    row.cell_ids.forEach(cid => {{ cellTable += `<span class="chip">${{cid}}</span>`; }});
+    cellTable += '</div>';
+  }}
+  cellTable += '</div>';
+
+  // ── Corrupt file names grouped by cell ───────────────────────────────────
+  let corruptHtml = '';
+  const corruptCells = Object.keys(cbc);
+  if (corruptCells.length > 0) {{
+    corruptHtml = '<div class="detail-section"><h3 style="color:#c0392b">Corrupt Files by Cell ID</h3>';
+    corruptHtml += '<table class="corrupt-table"><thead><tr><th>Cell ID</th><th>Files</th></tr></thead><tbody>';
+    corruptCells.forEach(cid => {{
+      const files = cbc[cid];
+      corruptHtml += `<tr><td><strong>${{cid}}</strong></td><td>`;
+      corruptHtml += files.map(f => `<div>${{f}}</div>`).join('');
+      corruptHtml += '</td></tr>';
+    }});
+    corruptHtml += '</tbody></table></div>';
+  }}
+
+  // ── Ignored files ─────────────────────────────────────────────────────────
+  let ignoredHtml = '';
+  const ignoredNames = row.ignored_names || [];
+  if (ignoredNames.length > 0) {{
+    ignoredHtml = '<div class="detail-section"><h3 style="color:#a0792e">Ignored Files (' + ignoredNames.length + ')</h3>';
+    ignoredHtml += '<table class="file-list-table ignored"><thead><tr><th>File Name</th></tr></thead><tbody>';
+    ignoredNames.forEach(f => {{ ignoredHtml += `<tr><td>${{f}}</td></tr>`; }});
+    ignoredHtml += '</tbody></table></div>';
+  }}
+
+  // ── Unknown files ─────────────────────────────────────────────────────────
+  let unknownHtml = '';
+  const unknownNames = row.unknown_names || [];
+  if (unknownNames.length > 0) {{
+    unknownHtml = '<div class="detail-section"><h3 style="color:#6b5ea8">Unknown Files (' + unknownNames.length + ')</h3>';
+    unknownHtml += '<table class="file-list-table unknown"><thead><tr><th>File Name</th></tr></thead><tbody>';
+    unknownNames.forEach(f => {{ unknownHtml += `<tr><td>${{f}}</td></tr>`; }});
+    unknownHtml += '</tbody></table></div>';
+  }}
+
+  return `<div class="detail-inner">${{cellTable}}${{corruptHtml}}${{ignoredHtml}}${{unknownHtml}}</div>`;
+}}
+
+let _allRows = DATA.rows.slice();  // working copy for sort/filter
+let _sortDir = {{}};
+
+function renderRows(rows) {{
+  tbody.innerHTML = '';
+  rows.forEach(row => {{
+    const tr = document.createElement('tr');
+    tr.className = 'zip-row';
+    tr.dataset.zippath = row.zip_path;
+    tr.dataset.searchtext = (row.zip_name + ' ' + row.cell_ids.join(' ')).toLowerCase();
+    tr.dataset.status = row.overall;
+
+    tr.innerHTML =
+      `<td class="expand-cell">${{row.zip_name}}</td>` +
+      `<td style="white-space:nowrap;font-size:.82rem;color:#555">${{row.run_ts || '—'}}</td>` +
+      `<td>${{row.to_copy}}</td>` +
+      (row.copied  > 0 ? `<td class="num-green">${{row.copied}}</td>`  : `<td>0</td>`) +
+      (row.corrupt > 0 ? `<td class="num-red">${{row.corrupt}}</td>`   : `<td>0</td>`) +
+      (row.ignored > 0 ? `<td class="num-orange">${{row.ignored}}</td>` : `<td>0</td>`) +
+      (row.unknown > 0 ? `<td class="num-orange">${{row.unknown}}</td>` : `<td>0</td>`) +
+      `<td>${{row.cell_ids.length}}</td>` +
+      `<td>${{badge(row.archive_moved)}}</td>` +
+      `<td>${{badge(row.overall)}}</td>`;
+    tbody.appendChild(tr);
+
+    // Detail row (hidden)
+    const detailTr = document.createElement('tr');
+    detailTr.className = 'detail-row';
+    detailTr.style.display = 'none';
+    const td = document.createElement('td');
+    td.colSpan = 10;
+    td.innerHTML = buildDetail(row);
+    detailTr.appendChild(td);
+    tbody.appendChild(detailTr);
+
+    tr.addEventListener('click', () => {{
+      const open = detailTr.style.display !== 'none';
+      detailTr.style.display = open ? 'none' : 'table-row';
+      tr.classList.toggle('open', !open);
+    }});
+  }});
+}}
+
+renderRows(_allRows);
+
+// ── Filter ────────────────────────────────────────────────────────────────────
+function applyFilter() {{
+  const q      = document.getElementById('searchInput').value.toLowerCase();
+  const status = document.getElementById('statusFilter').value;
+  const filtered = DATA.rows.filter(r => {{
+    const txt = (r.zip_name + ' ' + r.cell_ids.join(' ')).toLowerCase();
+    return (!q || txt.includes(q)) && (!status || r.overall === status);
+  }});
+  _allRows = filtered;
+  renderRows(_allRows);
+}}
+
+// ── Sort ──────────────────────────────────────────────────────────────────────
+function sortTable(colIdx) {{
+  const dir = (_sortDir[colIdx] = !_sortDir[colIdx]);
+  _allRows.sort((a, b) => {{
+    const cols = ['zip_name','run_ts','to_copy','copied','corrupt','ignored','unknown','cell_ids','archive_moved','overall'];
+    let va = a[cols[colIdx]], vb = b[cols[colIdx]];
+    if (cols[colIdx] === 'cell_ids') {{ va = va.length; vb = vb.length; }}
+    if (typeof va === 'boolean') {{ va = va ? 1 : 0; vb = vb ? 1 : 0; }}
+    const isString = cols[colIdx] === 'run_ts' || cols[colIdx] === 'zip_name' || cols[colIdx] === 'overall';
+    const na = isString ? NaN : parseFloat(va), nb = isString ? NaN : parseFloat(vb);
+    const cmp = isNaN(na) ? String(va).localeCompare(String(vb)) : na - nb;
+    return dir ? cmp : -cmp;
+  }});
+  renderRows(_allRows);
+}}
+</script>
+</body>
+</html>"""
