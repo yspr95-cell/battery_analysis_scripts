@@ -114,11 +114,14 @@ even when `SKIP_RERUN=True`.
 The skip logic detects `meta is None` and falls back to the old file-existence check,
 so existing evaluated data is not invalidated.
 
-**Change detection uses size + mtime, not file hashing.**
-Hashing large CSVs is expensive. Size + mtime together are reliable for this workflow:
-the harmonized files grow when data is appended (size change) and the cycler software
-updates the mtime on every write. If a file is replaced silently without either changing,
-set `SKIP_RERUN = False` or add the cell to `SKIP_RERUN_EXCEPT_IDs` to force a rerun.
+**Change detection uses file size only, not mtime or hashing.**
+Hashing large CSVs is expensive. mtime is unreliable in this workflow because NAS syncs
+and file copies reset it even when the content is identical, causing false reruns.
+Size is stable across copies and grows naturally when battery test data is appended.
+A minimum delta of `SOURCE_SIZE_CHANGE_THRESHOLD_KB` (default 1 KB) is required to
+trigger a rerun, filtering out metadata-only writes with no payload change.
+If a file is replaced with identical-size content, set `SKIP_RERUN = False` or add
+the cell to `SKIP_RERUN_EXCEPT_IDs` to force a rerun.
 
 **Trade-offs:**
 - Meta is only written on a fully successful run (all outputs completed). A partial
@@ -205,6 +208,43 @@ downstream analysis. The plot only needs to be visually faithful.
 | Step_id   | 1 (any)   | True |
 
 Forced interval: at least 1 row per 60 s.
+
+---
+
+## Log Path is Auto-Derived, Not User-Configurable
+
+**Decision:** The debug log file is written to `BASE_PATH/06_Logs/debug_logs/` automatically.
+`LOG_PATH` is not exposed in `run_config.py`.
+
+**Rationale:** `06_Logs/` is part of the fixed CDS folder convention, just like `03_Harmonized_Data/`
+and `04_Evaluated_Data/`. Exposing it as a parameter implies it is optional or relocatable — it is
+neither. Deriving it from `BASE_PATH` (via `PATHS_OBJ.debug_path`) keeps `run_config.py` minimal and
+avoids broken log paths when the project is moved to a new `BASE_PATH`.
+
+**Trade-offs:** Users who previously set a custom `LOG_PATH` need to remove it. The file is now
+always at `{BASE_PATH}/06_Logs/debug_logs/evaluate_debug_{hostname}.log`.
+
+---
+
+## GUI Uses Subprocess + JSON Config, Not Direct Import
+
+**Decision:** The PySide6 GUI (`evaluate_gui.py` / `src/gui/app.py`) does not import and call
+`run_evaluate()` directly. Instead it:
+1. Writes a temporary JSON config file with all parameters
+2. Spawns a subprocess: `python src/gui/_gui_runner.py <config.json>`
+3. Captures stdout/stderr line-by-line in a `QThread` and streams them to the console panel
+
+**Rationale:**
+- Direct import would run the pipeline on the main Qt event loop thread, freezing the GUI
+- `QThread` cannot safely forward `logging` output from an imported module without reconfiguring
+  the root logger, which affects all handlers
+- The subprocess approach is identical to the Harmonize GUI pattern, keeping the two tools consistent
+
+**Trade-offs:**
+- Subprocess startup adds ~1–2 s overhead per run (negligible against pipeline runtime)
+- The temp JSON config must serialise all parameters — no Python objects, only JSON-safe types
+- `_gui_runner.py` must stay in sync with `run_evaluate()` signature (new required params need
+  to be added to both `ConfigEditorWidget.read_config()` and `_gui_runner.py`)
 
 ---
 

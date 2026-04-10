@@ -21,9 +21,10 @@ cumulative capacity reconstruction, and SOC calculation, then exports a
 TB_CPA_Evaluate/
 ├── run_config.py              # User-facing entry point — edit parameters here
 ├── run_evaluate.py            # Pipeline runner: mirrors Run_Base_evaluation.py
+├── evaluate_gui.py            # GUI entry point — run with: python evaluate_gui.py
 └── src/                       # Supporting library (verbatim from basic_evaluation_cop)
     ├── __init__.py
-    ├── paths.py               # PATHS_OBJ (03_/04_ folder convention), long_path()
+    ├── paths.py               # PATHS_OBJ (03_/04_/06_ folder convention), long_path()
     ├── data_io.py             # read_harm_cell_data, export_to_excel, extract_2D_table_from_excel, long_path
     ├── cleaning.py            # fix_step_series, fix_capacity_counting, check_time_gap, split_on_time_gaps
     ├── helpers.py             # Pure math/search utilities
@@ -32,9 +33,13 @@ TB_CPA_Evaluate/
     ├── plotting.py            # plot_cell_data + general-purpose plotting helpers
     ├── table_interpolation.py # interpolate_table, query_table (SOC × Temperature lookup)
     ├── meta.py                # write_meta, read_meta, sources_changed, params_changed, build_gaps_info
-    └── eval_steps/            # Step-level feature extraction
-        ├── __init__.py        # re-exports extract_step_features
-        └── step_features.py   # extract_step_features() — per-step summary table
+    ├── eval_steps/            # Step-level feature extraction
+    │   ├── __init__.py        # re-exports extract_step_features
+    │   └── step_features.py   # extract_step_features() — per-step summary table
+    └── gui/                   # PySide6 GUI package
+        ├── __init__.py        # re-exports main()
+        ├── app.py             # MainWindow, ConfigEditorWidget, ConsoleWidget, RunWorker
+        └── _gui_runner.py     # Subprocess shim: reads JSON config → calls run_evaluate()
 ```
 
 ---
@@ -101,17 +106,28 @@ BASE_PATH/03_Harmonized_Data/{CELLID}/
 ## Module Responsibilities
 
 ### `run_config.py`
-User-facing entry point. Eight editable parameters:
-`BASE_PATH`, `NOMINAL_CAPACITY`, `MAX_CELL_VOLT`, `MIN_CELL_VOLT`,
-`SKIP_RERUN`, `SKIP_RERUN_EXCEPT_IDs`, `RUN_CELL_IDs`, `LOG_PATH`.
+User-facing entry point. Editable parameters:
+- Cell identity: `BASE_PATH`, `NOMINAL_CAPACITY`, `MAX_CELL_VOLT`, `MIN_CELL_VOLT`
+- Run control: `SKIP_RERUN`, `SKIP_RERUN_EXCEPT_IDs`, `RUN_CELL_IDs`
+- Source change detection: `SOURCE_SIZE_CHANGE_THRESHOLD_KB`
+- Overview plot settings: `PLOT_VOLTAGE_THRESHOLD_V`, `PLOT_CURRENT_THRESHOLD_A`, `PLOT_MIN_INTERVAL_S`
+
+Log path is auto-derived as `BASE_PATH/06_Logs/debug_logs/` — not user-configurable.
 Calls `run_evaluate.run_evaluate()`.
 
 ### `run_evaluate.py`
-- Builds `PATHS_OBJ` → resolves `03_Harmonized_Data/` and `04_Evaluated_Data/`
+- Builds `PATHS_OBJ` → resolves `03_Harmonized_Data/`, `04_Evaluated_Data/`, `06_Logs/debug_logs/`
 - Discovers cell subfolders; filters by `RUN_CELL_IDs` if provided
 - Loops over cells, runs full pipeline per cell (mirrors `Run_Base_evaluation.py`)
-- Writes `_processed_data.csv` and `_Full_Test_overview_resampled_plot.html`
+- Writes `_processed_data.csv`, `_step_features.csv`, `_meta.json`, and `_Full_Test_overview_resampled_plot.html`
 - Returns `dict(processed, skipped, failed, total)`
+
+### `evaluate_gui.py` + `src/gui/`
+- `evaluate_gui.py` — thin root-level entry point; adds package root to `sys.path` and calls `src.gui.main()`
+- `src/gui/app.py` — PySide6 GUI: `MainWindow`, `ConfigEditorWidget` (all Evaluate parameters), `ConsoleWidget` (live stdout/stderr), `RunWorker(QThread)` (subprocess-based)
+- `src/gui/_gui_runner.py` — subprocess shim: reads JSON config written by GUI → calls `run_evaluate(**kwargs)`
+- Configs are persisted to `gui_configs.json` in the package root
+- Styled with Catppuccin Mocha dark theme (QSS)
 
 ### `src/paths.py`
 - `PATHS_OBJ(base_path)` — derives `harmonized_path`, `evaluated_path`, `logs_path`
@@ -190,11 +206,16 @@ Pure utilities: `is_within_range`, `closest_lower_number`, `closest_nth_higher_n
 BASE_PATH/
 ├── 03_Harmonized_Data/
 │   └── {CELLID}/
-│       └── *{CELLID}*.csv      ← input files
-└── 04_Evaluated_Data/
-    └── {CELLID}/
-        ├── {CELLID}_processed_data.csv
-        └── {CELLID}_Full_Test_overview_resampled_plot.html
+│       └── *{CELLID}*.csv            ← input files
+├── 04_Evaluated_Data/
+│   └── {CELLID}/
+│       ├── {CELLID}_processed_data.csv
+│       ├── {YYYYMMDD}_{CELLID}_step_features.csv
+│       ├── {CELLID}_meta.json
+│       └── {CELLID}_Full_Test_overview_resampled_plot.html
+└── 06_Logs/
+    └── debug_logs/
+        └── evaluate_debug_{hostname}.log
 ```
 
 Folder names are fixed in `src/paths.py` via `PATHS_OBJ`. Only `BASE_PATH` is user-facing.
